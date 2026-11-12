@@ -11,6 +11,12 @@ import yt_dlp
 import httpx
 import logging
 
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+except Exception:
+    pass
+
 logger = logging.getLogger("video_tool")
 
 # Optimized extractor args: Use web_embedded and tv_samsung clients.
@@ -117,43 +123,53 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48)
         ["tv_samsung", "mweb"],   # Stage 3: TV & mobile fallback
     ]
     
+    # Format candidates: Try merged 1080p HD first, then single-stream progressive MP4 fallback
+    format_candidates = [
+        ("bestvideo[height<=1080]+bestaudio/best[height<=1080]/best[ext=mp4]/best", True),
+        ("best[height<=1080][ext=mp4]/best[ext=mp4]/best", False)
+    ]
+    
     info = None
     title = "Media"
     last_err = None
 
     for stage_clients in client_stages:
-        ydl_opts = {
-            "outtmpl": out_template,
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "max_filesize": max_filesize_mb * 1024 * 1024,
-            "http_headers": YTDLP_HTTP_HEADERS,
-            "js_runtimes": {"node": {}},
-            "socket_timeout": 25,
-            "retries": 2,
-            "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best[ext=mp4]/best",
-            "merge_output_format": "mp4",
-        }
-        if stage_clients:
-            ydl_opts["extractor_args"] = {"youtube": {"player_client": stage_clients}}
-        cookie_file = get_cookie_file()
-        if cookie_file:
-            ydl_opts["cookiefile"] = cookie_file
-        proxy = get_proxy()
-        if proxy:
-            ydl_opts["proxy"] = proxy
+        for fmt, merge_mp4 in format_candidates:
+            ydl_opts = {
+                "outtmpl": out_template,
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "max_filesize": max_filesize_mb * 1024 * 1024,
+                "http_headers": YTDLP_HTTP_HEADERS,
+                "js_runtimes": {"node": {}},
+                "socket_timeout": 25,
+                "retries": 2,
+                "format": fmt,
+            }
+            if merge_mp4:
+                ydl_opts["merge_output_format"] = "mp4"
+            if stage_clients:
+                ydl_opts["extractor_args"] = {"youtube": {"player_client": stage_clients}}
+            cookie_file = get_cookie_file()
+            if cookie_file:
+                ydl_opts["cookiefile"] = cookie_file
+            proxy = get_proxy()
+            if proxy:
+                ydl_opts["proxy"] = proxy
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info:
-                    title = info.get("title", "Media")
-                    break
-        except Exception as e:
-            last_err = e
-            logger.warning(f"Stage with clients {stage_clients} failed: {e}. Trying next stage...")
-            continue
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    if info:
+                        title = info.get("title", "Media")
+                        break
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Stage clients={stage_clients} fmt={fmt} failed: {e}. Trying next...")
+                continue
+        if info:
+            break
 
     if not info and last_err:
         raise last_err
