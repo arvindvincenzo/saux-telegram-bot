@@ -4,3 +4,7 @@ __pycache__/
 temp_media/
 .env
 *.db
+cookies/
+*.cookie
+*.cookies
+temp_test*

@@ -16,11 +16,7 @@ logger = logging.getLogger("video_tool")
 # Optimized extractor args: Use web_embedded and tv_samsung clients.
 # These bypass YouTube bot verification on cloud/datacenter IP addresses (e.g. Railway)
 # while working seamlessly for Shorts and regular videos.
-YTDLP_EXTRACTOR_ARGS = {
-    "youtube": {
-        "player_client": ["web_embedded", "tv_samsung", "mweb"]
-    }
-}
+YTDLP_EXTRACTOR_ARGS = {}
 
 YTDLP_HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -114,11 +110,11 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48)
     os.makedirs(output_dir, exist_ok=True)
     out_template = os.path.join(output_dir, "%(title).50s [%(id)s].%(ext)s")
     
-    # 3-Stage Client Fallback strategy for maximum cloud resilience
+    # Multi-Stage Client Fallback strategy for maximum cloud resilience
     client_stages = [
-        ["web_embedded", "tv_samsung"],
-        ["mweb", "android_vr"],
-        ["default"]
+        None,  # Stage 1: Modern adaptive client selection (visionos/web/android with JS challenge solver)
+        ["web", "web_embedded"],  # Stage 2: Web & embedded clients
+        ["tv_samsung", "mweb"],   # Stage 3: TV & mobile fallback
     ]
     
     info = None
@@ -132,14 +128,15 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48)
             "no_warnings": True,
             "noplaylist": True,
             "max_filesize": max_filesize_mb * 1024 * 1024,
-            "extractor_args": {"youtube": {"player_client": stage_clients}},
             "http_headers": YTDLP_HTTP_HEADERS,
             "js_runtimes": {"node": {}},
-            "socket_timeout": 20,
+            "socket_timeout": 25,
             "retries": 2,
             "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best[ext=mp4]/best",
             "merge_output_format": "mp4",
         }
+        if stage_clients:
+            ydl_opts["extractor_args"] = {"youtube": {"player_client": stage_clients}}
         cookie_file = get_cookie_file()
         if cookie_file:
             ydl_opts["cookiefile"] = cookie_file
