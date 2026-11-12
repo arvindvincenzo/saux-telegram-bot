@@ -519,7 +519,11 @@ async def handle_text(message: types.Message):
             return
 
         # B. Fresh Download Pipeline
-        status_msg = await message.reply("⚡ *Downloading video in 1080p HD...*", parse_mode="Markdown")
+        try:
+            status_msg = await message.reply("⚡ *Downloading video in 1080p HD...*", parse_mode="Markdown")
+        except Exception:
+            status_msg = await message.answer("⚡ *Downloading video in 1080p HD...*", parse_mode="Markdown")
+
         user_out_dir = str(TEMP_DIR / f"dl_{user_id}_{token}")
         files_to_clean = []
 
@@ -551,21 +555,37 @@ async def handle_text(message: types.Message):
                 )
 
                 if media_type == "image":
-                    sent = await message.reply_document(
-                        document=FSInputFile(str(file_path)),
-                        caption=caption,
-                        reply_markup=img_keyboard,
-                        parse_mode="Markdown"
-                    )
+                    try:
+                        sent = await message.reply_document(
+                            document=FSInputFile(str(file_path)),
+                            caption=caption,
+                            reply_markup=img_keyboard,
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        sent = await message.answer_document(
+                            document=FSInputFile(str(file_path)),
+                            caption=caption,
+                            reply_markup=img_keyboard,
+                            parse_mode="Markdown"
+                        )
                     if sent.document:
                         db.set_cached_media(url, sent.document.file_id, "image", title, size_mb, thumb_url)
                 else:
-                    sent = await message.reply_video(
-                        video=FSInputFile(str(file_path)),
-                        caption=caption,
-                        reply_markup=action_keyboard,
-                        parse_mode="Markdown"
-                    )
+                    try:
+                        sent = await message.reply_video(
+                            video=FSInputFile(str(file_path)),
+                            caption=caption,
+                            reply_markup=action_keyboard,
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        sent = await message.answer_video(
+                            video=FSInputFile(str(file_path)),
+                            caption=caption,
+                            reply_markup=action_keyboard,
+                            parse_mode="Markdown"
+                        )
                     if sent.video:
                         db.set_cached_media(url, sent.video.file_id, "video", title, size_mb, thumb_url, result.get("duration", 0))
 
