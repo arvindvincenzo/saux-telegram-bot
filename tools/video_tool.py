@@ -1,8 +1,10 @@
 import os
 import glob
 import re
+import io
 import urllib.parse
 from pathlib import Path
+from PIL import Image
 import yt_dlp
 import httpx
 import logging
@@ -47,10 +49,123 @@ def clean_media_url(url: str) -> str:
             
     return url
 
+def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48) -> dict:
+    """
+    Ultra-fast single-pass direct media downloader.
+    Downloads the video immediately in optimal progressive MP4 (720p/HD) in under seconds,
+    extracting title, thumbnail, and duration in the same single network stream.
+    """
+    url = clean_media_url(url)
+    os.makedirs(output_dir, exist_ok=True)
+    out_template = os.path.join(output_dir, "%(title).50s [%(id)s].%(ext)s")
+    
+    ydl_opts = {
+        "outtmpl": out_template,
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "max_filesize": max_filesize_mb * 1024 * 1024,
+        "extractor_args": YTDLP_EXTRACTOR_ARGS,
+        "http_headers": YTDLP_HTTP_HEADERS,
+        "js_runtimes": {"node": {}},
+        "socket_timeout": 20,
+        "retries": 3,
+        "format": "best[height<=720][ext=mp4]/best[ext=mp4]/best",
+    }
+    cookie_file = get_cookie_file()
+    if cookie_file:
+        ydl_opts["cookiefile"] = cookie_file
+
+    info = None
+    title = "Media"
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        if info:
+            title = info.get("title", "Media")
+
+    downloaded_file = None
+    if info and "requested_downloads" in info and info["requested_downloads"]:
+        downloaded_file = info["requested_downloads"][0].get("filepath")
+
+    if not downloaded_file or not os.path.exists(downloaded_file):
+        files = list(Path(output_dir).glob("*"))
+        if files:
+            downloaded_file = str(max(files, key=os.path.getctime))
+
+    if not downloaded_file or not os.path.exists(downloaded_file):
+        raise FileNotFoundError("Could not locate downloaded media file.")
+
+    size_mb = round(os.path.getsize(downloaded_file) / (1024 * 1024), 2)
+    thumb_url = info.get("thumbnail") if info else None
+    duration = info.get("duration", 0) if info else 0
+
+    is_image = downloaded_file.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+
+    return {
+        "file_path": downloaded_file,
+        "title": title,
+        "size_mb": size_mb,
+        "thumb_url": thumb_url,
+        "duration": duration,
+        "media_type": "image" if is_image else "video",
+        "url": url
+    }
+
+def compress_image_ultra(input_path: str, output_path: str, target_kb: int = 1) -> dict:
+    """
+    Compresses an image down to ~1KB ultra-compact size while preserving visual aspect ratio.
+    Utilizes adaptive resolution downscaling and WebP/lossy quantization.
+    """
+    orig_bytes = os.path.getsize(input_path)
+    orig_kb = round(orig_bytes / 1024, 2)
+
+    img = Image.open(input_path).convert("RGB")
+    w, h = img.size
+
+    # Scale down gracefully to prevent massive raw byte payloads
+    scale = min(1.0, 320.0 / max(w, h))
+    new_w = max(64, int(w * scale))
+    new_h = max(64, int(h * scale))
+    resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+    best_buf = None
+    best_size = 99999999
+
+    for q in [35, 25, 15, 10, 5]:
+        buf = io.BytesIO()
+        resized.save(buf, format="WEBP", quality=q, method=6)
+        size = buf.tell()
+        if size < best_size:
+            best_size = size
+            best_buf = buf.getvalue()
+        if size <= target_kb * 1024:
+            break
+
+    # If still above target, fallback to low-res tiny JPEG
+    if best_size > target_kb * 1024 * 2:
+        buf = io.BytesIO()
+        tiny = img.resize((160, max(40, int(160 * h / w))), Image.Resampling.LANCZOS)
+        tiny.save(buf, format="JPEG", quality=20, optimize=True)
+        if buf.tell() < best_size:
+            best_buf = buf.getvalue()
+
+    with open(output_path, "wb") as f:
+        f.write(best_buf)
+
+    comp_bytes = os.path.getsize(output_path)
+    comp_kb = round(comp_bytes / 1024, 2)
+    saved_pct = round((1 - (comp_kb / max(0.01, orig_kb))) * 100, 1)
+
+    return {
+        "file_path": output_path,
+        "orig_kb": orig_kb,
+        "compressed_kb": comp_kb,
+        "saved_pct": max(0, saved_pct)
+    }
+
 def get_media_info(url: str) -> dict:
     """
     Extracts title, duration, thumbnail, and media type without downloading.
-    Includes mobile client emulation and node js_runtime to solve challenges.
     """
     url = clean_media_url(url)
     ydl_opts = {
@@ -75,7 +190,6 @@ def get_media_info(url: str) -> dict:
             thumbnail = info.get("thumbnail")
             extractor = info.get("extractor_key", "Media").lower()
 
-            # Check if it's an image post/carousel (e.g. Instagram/Twitter photos)
             is_image_post = False
             if info.get("_type") == "playlist" and not any(e.get("duration") for e in info.get("entries", [])):
                 is_image_post = True
@@ -94,7 +208,6 @@ def get_media_info(url: str) -> dict:
         err_msg = str(e)
         logger.warning(f"Primary yt-dlp extract failed: {err_msg}")
 
-        # Fallback oEmbed metadata for YouTube
         if "youtube" in url.lower() or "youtu.be" in url.lower():
             try:
                 with httpx.Client(timeout=10.0, follow_redirects=True) as client:
@@ -132,7 +245,7 @@ def download_media_custom(
 ) -> dict:
     """
     Downloads media according to user-selected quality/mode:
-    - 1080p, 720p, 480p, 360p (video)
+    - 4k, 1080p, 720p, 480p, 360p (video)
     - mp3 (audio only)
     - thumbnail (image)
     - post_images (photo posts)
@@ -202,8 +315,8 @@ def download_media_custom(
         media_type = "image"
 
     else:
-        # Video resolution mode (1080p, 720p, 480p, 360p)
-        height_map = {"1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
+        # Video resolution mode (4k, 1080p, 720p, 480p, 360p)
+        height_map = {"4k": 2160, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
         h = height_map.get(mode, 720)
         ydl_opts.update({
             "format": f"best[height<={h}][ext=mp4]/best[height<={h}]/best[ext=mp4]/bestvideo[height<={h}]+bestaudio/best",

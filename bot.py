@@ -11,7 +11,7 @@ from aiogram.enums import ChatAction
 
 from config import TELEGRAM_BOT_TOKEN, TEMP_DIR, DAILY_USER_LIMIT
 from tools.image_tool import process_image
-from tools.video_tool import get_media_info, download_media_custom
+from tools.video_tool import get_media_info, download_media_custom, download_media_instant, compress_image_ultra
 from tools.web_tool import search_web, get_live_web_context
 from tools.openchamber_tool import is_openchamber_ready, generate_chat_reply
 import db
@@ -239,6 +239,7 @@ async def handle_download_callback(callback: CallbackQuery):
         return
 
     mode_labels = {
+        "4k": "4K Ultra HD",
         "1080p": "1080p Full HD",
         "720p": "720p HD",
         "480p": "480p Standard",
@@ -291,9 +292,17 @@ async def handle_download_callback(callback: CallbackQuery):
                     parse_mode="Markdown"
                 )
             elif media_type == "image":
+                cmp_markup = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🗜️ Compress into 1KB (Smart)", callback_data=f"cmp:{token}")],
+                    [InlineKeyboardButton(text="⚡ SAUX Crate", url=f"{MINI_APP_URL}")]
+                ])
+                if token in PENDING_DOWNLOADS:
+                    PENDING_DOWNLOADS[token]["thumb_path"] = str(file_path)
+
                 await callback.message.reply_document(
                     document=FSInputFile(str(file_path)),
                     caption=caption,
+                    reply_markup=cmp_markup,
                     parse_mode="Markdown"
                 )
             else:
@@ -339,12 +348,84 @@ async def handle_download_callback(callback: CallbackQuery):
                     pass
         finally:
             for f in files_to_clean:
+                # Don't delete immediately if it's the thumbnail needed for 1KB compression
+                saved_thumb = PENDING_DOWNLOADS.get(token, {}).get("thumb_path")
+                if saved_thumb and str(f) == saved_thumb:
+                    continue
                 if f.exists():
                     try:
                         f.unlink()
                     except Exception:
                         pass
-            PENDING_DOWNLOADS.pop(token, None)
+            if mode != "thumbnail" and not PENDING_DOWNLOADS.get(token, {}).get("thumb_path"):
+                PENDING_DOWNLOADS.pop(token, None)
+
+@dp.callback_query(F.data.startswith("cmp:"))
+async def handle_compress_callback(callback: types.CallbackQuery):
+    token = callback.data.split(":")[1]
+    data = PENDING_DOWNLOADS.get(token)
+    if not data:
+        await callback.answer("Session expired. Please send the link again.", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    username = callback.from_user.username or ""
+    allowed, remaining, limit = db.check_and_consume_quota(user_id, username, DAILY_USER_LIMIT)
+    if not allowed:
+        await callback.message.reply(
+            f"⚠️ **Agent Usage Limit Reached:** You have utilized your daily quota of `{limit}` units.",
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        return
+
+    await callback.message.reply("⚡ *Compressing thumbnail into ~1KB ultra-compact size...*", parse_mode="Markdown")
+
+    user_out_dir = TEMP_DIR / f"cmp_{user_id}_{token}"
+    os.makedirs(user_out_dir, exist_ok=True)
+    out_file = str(user_out_dir / "thumbnail_1kb.webp")
+
+    input_file = data.get("thumb_path")
+    if not input_file or not os.path.exists(input_file):
+        thumb_url = data.get("thumb_url")
+        if thumb_url:
+            raw_thumb = str(user_out_dir / "raw_thumb.jpg")
+            try:
+                with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+                    r = client.get(thumb_url)
+                    with open(raw_thumb, "wb") as f:
+                        f.write(r.content)
+                input_file = raw_thumb
+            except Exception as e:
+                logger.warning(f"Failed to fetch thumb_url for compression: {e}")
+
+    if not input_file or not os.path.exists(input_file):
+        await callback.answer("Could not locate thumbnail file to compress.", show_alert=True)
+        return
+
+    try:
+        cmp_res = compress_image_ultra(input_file, out_file, target_kb=1)
+        caption = (
+            f"🗜️ **Ultra-Compressed Thumbnail**\n"
+            f"• Original: `{cmp_res['orig_kb']} KB` ➔ Compressed: `{cmp_res['compressed_kb']} KB`\n"
+            f"• Saved: `{cmp_res['saved_pct']}%` size (Clean visual clarity preserved!)\n"
+            f"*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
+        )
+        await callback.message.reply_document(
+            document=FSInputFile(cmp_res["file_path"]),
+            caption=caption,
+            parse_mode="Markdown"
+        )
+        await callback.answer("Compressed successfully!")
+    except Exception as err:
+        logger.error(f"Compression error: {err}", exc_info=True)
+        await callback.message.reply(f"❌ Compression failed: {str(err)[:100]}")
+    finally:
+        try:
+            if os.path.exists(out_file):
+                os.remove(out_file)
+        except Exception:
+            pass
 
 @dp.message(F.text)
 async def handle_text(message: types.Message):
@@ -357,72 +438,122 @@ async def handle_text(message: types.Message):
     user_prompt = message.text.strip()
     detected_urls = URL_REGEX.findall(user_prompt)
 
-    # 1. Interactive Video / Post / Audio Download Menu
+    # 1. Instant Direct Video / Media Auto-Download Pipeline
     if detected_urls:
         url = detected_urls[0]
-        status_msg = await message.reply("🔍 *Analyzing media URL...*", parse_mode="Markdown")
-        try:
-            info = get_media_info(url)
-            token = uuid.uuid4().hex[:8]
-            PENDING_DOWNLOADS[token] = {
-                "url": url,
-                "title": info["title"],
-                "thumb_url": info["thumbnail"],
-                "is_image_post": info["is_image_post"],
-                "user_id": user_id
-            }
+        allowed, remaining, limit = db.check_and_consume_quota(user_id, username, DAILY_USER_LIMIT)
+        if not allowed:
+            await message.reply(
+                f"⚠️ **Agent Usage Limit Reached:** You have utilized your daily quota of `{limit}` units. Resets in 24 hours.",
+                parse_mode="Markdown"
+            )
+            return
 
-            title = info["title"][:55]
-            if info["is_image_post"]:
-                # Post-only interactive options
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text="📸 Download Photo(s)", callback_data=f"dl:{token}:post_images"),
-                        InlineKeyboardButton(text="🖼 Thumbnail / Cover", callback_data=f"dl:{token}:thumbnail")
-                    ]
-                ])
-                menu_text = (
-                    f"📷 **Post Detected:**\n"
-                    f"*{title}*\n\n"
-                    f"Select what to download from this post:"
-                )
-            else:
-                # Video interactive options
-                duration_str = f" ({info['duration']}s)" if info['duration'] else ""
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text="🎬 1080p (Full HD)", callback_data=f"dl:{token}:1080p"),
-                        InlineKeyboardButton(text="📹 720p (HD)", callback_data=f"dl:{token}:720p")
-                    ],
-                    [
-                        InlineKeyboardButton(text="📱 480p (Medium)", callback_data=f"dl:{token}:480p"),
-                        InlineKeyboardButton(text="⚡ 360p (Fast)", callback_data=f"dl:{token}:360p")
-                    ],
-                    [
-                        InlineKeyboardButton(text="🎵 MP3 (Audio Only)", callback_data=f"dl:{token}:mp3"),
-                        InlineKeyboardButton(text="🖼 Thumbnail Only", callback_data=f"dl:{token}:thumbnail")
-                    ]
-                ])
-                menu_text = (
-                    f"🎬 **Video Detected:**\n"
-                    f"*{title}*{duration_str}\n\n"
-                    f"Select your format & quality:"
-                )
+        status_msg = await message.reply("⚡ *Downloading video instantly...*", parse_mode="Markdown")
+        token = uuid.uuid4().hex[:8]
+        user_out_dir = str(TEMP_DIR / f"dl_{user_id}_{token}")
+        files_to_clean = []
 
-            await status_msg.edit_text(menu_text, reply_markup=keyboard, parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"Error inspecting media: {e}", exc_info=True)
-            err_lower = str(e).lower()
-            if "sign in to confirm" in err_lower or "confirm you're not a bot" in err_lower:
-                user_msg = "⚠️ **YouTube Cloud Protection**\nYouTube cloud bot challenge triggered on this video. Please try another video or retry shortly."
-            elif "unavailable" in err_lower or "not found" in err_lower or "404" in err_lower or "private" in err_lower:
-                user_msg = "⚠️ **Video Unavailable**\nThis video is deleted, private, or region-locked on YouTube."
-            else:
-                user_msg = f"❌ **Could not analyze media link:**\n`{str(e)[:150]}`"
+        async with TASK_SEMAPHORE:
             try:
-                await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard(), disable_web_page_preview=True, parse_mode="Markdown")
-            except Exception:
-                await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard(), disable_web_page_preview=True)
+                result = download_media_instant(url=url, output_dir=user_out_dir)
+                file_path = Path(result["file_path"])
+                files_to_clean.append(file_path)
+
+                title = result.get("title", "Media Video")
+                size_mb = result.get("size_mb", 0)
+                thumb_url = result.get("thumb_url")
+                media_type = result.get("media_type", "video")
+
+                PENDING_DOWNLOADS[token] = {
+                    "url": url,
+                    "title": title,
+                    "thumb_url": thumb_url,
+                    "thumb_path": str(file_path) if media_type == "image" else None,
+                    "user_id": user_id
+                }
+
+                action_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="💎 1080p Full HD", callback_data=f"dl:{token}:1080p"),
+                        InlineKeyboardButton(text="💎 4K Ultra HD", callback_data=f"dl:{token}:4k")
+                    ],
+                    [
+                        InlineKeyboardButton(text="🖼️ Get Thumbnail", callback_data=f"dl:{token}:thumbnail"),
+                        InlineKeyboardButton(text="🎵 Extract MP3", callback_data=f"dl:{token}:mp3")
+                    ],
+                    [
+                        InlineKeyboardButton(text="⚡ SAUX Crate", url=f"{MINI_APP_URL}")
+                    ]
+                ])
+
+                caption = (
+                    f"🎬 **{title[:65]}**\n"
+                    f"• Quality: `⚡ Instant HD` | Size: `{size_mb} MB`\n"
+                    f"*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
+                )
+
+                if media_type == "image":
+                    img_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🗜️ Compress into 1KB (Smart)", callback_data=f"cmp:{token}")],
+                        [InlineKeyboardButton(text="⚡ SAUX Crate", url=f"{MINI_APP_URL}")]
+                    ])
+                    await message.reply_document(
+                        document=FSInputFile(str(file_path)),
+                        caption=caption,
+                        reply_markup=img_keyboard,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await message.reply_video(
+                        video=FSInputFile(str(file_path)),
+                        caption=caption,
+                        reply_markup=action_keyboard,
+                        parse_mode="Markdown"
+                    )
+
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+
+            except Exception as e:
+                logger.error(f"Error in instant media download: {e}", exc_info=True)
+                raw_err = str(e)
+                clean_err = re.sub(r'https?://\S+', '', raw_err)
+                clean_err = clean_err.replace("ERROR:", "").replace("[youtube]", "").replace("DownloadError:", "").strip()
+
+                err_lower = raw_err.lower()
+                if "instagram" in err_lower and ("login" in err_lower or "empty media response" in err_lower or "not granting access" in err_lower or "unauthorized" in err_lower):
+                    user_msg = (
+                        "⚠️ **Instagram Login Protection**\n\n"
+                        "Instagram restricted this reel/post behind authentication.\n"
+                        "💡 *Tip: YouTube, TikTok, and Twitter/X videos download instantly!*"
+                    )
+                elif "not a bot" in err_lower or "sign in" in err_lower:
+                    user_msg = "⚠️ **YouTube Cloud Verification**\nYouTube cloud protection triggered for this video stream. Please try an alternate video link or audio mode."
+                elif "unavailable" in err_lower or "not found" in err_lower or "private" in err_lower:
+                    user_msg = "⚠️ **Video Unavailable**\nThis video is deleted, private, invalid, or region-locked on YouTube."
+                else:
+                    user_msg = f"❌ **Failed to download media:**\n{clean_err[:120]}"
+
+                try:
+                    await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard(), disable_web_page_preview=True, parse_mode="Markdown")
+                except Exception:
+                    try:
+                        await status_msg.edit_text(user_msg, disable_web_page_preview=True)
+                    except Exception:
+                        pass
+            finally:
+                for f in files_to_clean:
+                    saved_thumb = PENDING_DOWNLOADS.get(token, {}).get("thumb_path")
+                    if saved_thumb and str(f) == saved_thumb:
+                        continue
+                    if f.exists():
+                        try:
+                            f.unlink()
+                        except Exception:
+                            pass
         return
 
     # Quota Check for text/search/agent tasks
