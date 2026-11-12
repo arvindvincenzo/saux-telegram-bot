@@ -92,11 +92,12 @@ def get_media_info(url: str) -> dict:
             except Exception as oe_err:
                 logger.debug(f"oEmbed fallback error: {oe_err}")
 
-        if "Sign in to confirm" in err_msg or "confirm you're not a bot" in err_msg:
-            raise RuntimeError("⚠️ YouTube anti-bot triggered on this video. Retrying with mobile stream parser...")
-        if "Video unavailable" in err_msg:
-            raise RuntimeError("⚠️ This video is unavailable, deleted, or private on YouTube.")
-        raise
+        err_lower = err_msg.lower()
+        if "sign in to confirm" in err_lower or "not a bot" in err_lower:
+            raise RuntimeError("⚠️ YouTube verification challenge triggered on this video. Please try another video or retry in a few moments.")
+        if "unavailable" in err_lower or "not found" in err_lower or "private" in err_lower:
+            raise RuntimeError("⚠️ This video is unavailable, deleted, private, or region-locked on YouTube.")
+        raise RuntimeError(f"Unable to parse media stream: {err_msg[:120]}")
 
 def download_media_custom(
     url: str,

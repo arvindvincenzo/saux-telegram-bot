@@ -387,13 +387,13 @@ async def handle_text(message: types.Message):
             await status_msg.edit_text(menu_text, reply_markup=keyboard, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error inspecting media: {e}", exc_info=True)
-            err_str = str(e)
-            if "Sign in to confirm" in err_str or "confirm you're not a bot" in err_str:
-                user_msg = "⚠️ **YouTube Anti-Bot Protection**\nThis video is restricted by YouTube's cloud verification. Our mobile parser was dispatched; please retry or try an alternate link."
-            elif "Video unavailable" in err_str or "404" in err_str:
+            err_lower = str(e).lower()
+            if "sign in to confirm" in err_lower or "confirm you're not a bot" in err_lower:
+                user_msg = "⚠️ **YouTube Cloud Protection**\nYouTube cloud bot challenge triggered on this video. Please try another video or retry shortly."
+            elif "unavailable" in err_lower or "not found" in err_lower or "404" in err_lower or "private" in err_lower:
                 user_msg = "⚠️ **Video Unavailable**\nThis video is deleted, private, or region-locked on YouTube."
             else:
-                user_msg = f"❌ **Could not analyze media link:**\n`{err_str[:150]}`"
+                user_msg = f"❌ **Could not analyze media link:**\n`{str(e)[:150]}`"
             try:
                 await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
             except Exception:
@@ -491,6 +491,17 @@ async def main():
         types.BotCommand(command="help", description="🛠 Capabilities & Guide"),
     ]
     await bot.set_my_commands(commands)
+    try:
+        from aiogram.types import MenuButtonWebApp, WebAppInfo
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="🌐 Weightless Browser",
+                web_app=WebAppInfo(url="https://saux.si")
+            )
+        )
+        logger.info("Successfully registered Telegram Bot Menu Button -> 🌐 Weightless Browser (https://saux.si)")
+    except Exception as e:
+        logger.warning(f"Could not set chat menu button: {e}")
     logger.info("Starting Autonomous Agentic Telegram Bot...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
