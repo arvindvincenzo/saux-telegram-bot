@@ -9,7 +9,7 @@ import logging
 
 logger = logging.getLogger("video_tool")
 
-# Extractor args and User-Agent to bypass YouTube bot detection on cloud/datacenter IPs
+# Extractor args and User-Agent to bypass YouTube and web bot detection
 YTDLP_EXTRACTOR_ARGS = {
     "youtube": {
         "player_client": ["tv", "android", "web_embedded"],
@@ -21,17 +21,36 @@ YTDLP_HTTP_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+def get_cookie_file() -> str | None:
+    """Finds cookies.txt in current or parent directories if available."""
+    candidates = [
+        Path.cwd() / "cookies.txt",
+        Path(__file__).resolve().parent / "cookies.txt",
+        Path(__file__).resolve().parent.parent / "cookies.txt",
+    ]
+    for p in candidates:
+        if p.is_file():
+            return str(p)
+    return None
+
 def clean_media_url(url: str) -> str:
-    """Fixes malformed URL parameters (e.g., ?si- instead of ?si=) and cleans up tracking."""
+    """Fixes malformed URL parameters and cleans up tracking."""
     url = url.strip()
     if "?si-" in url:
         url = url.replace("?si-", "?si=")
+    
+    # Strip Instagram tracking parameters
+    if "instagram.com" in url:
+        match = re.search(r'(https?://(?:www\.)?instagram\.com/(?:reel|p|tv|stories)/[\w\-]+)/?', url)
+        if match:
+            url = match.group(1) + "/"
+            
     return url
 
 def get_media_info(url: str) -> dict:
     """
     Extracts title, duration, thumbnail, and media type without downloading.
-    Includes mobile client emulation to avoid YouTube bot confirmation blocks.
+    Includes mobile client emulation and node js_runtime to solve challenges.
     """
     url = clean_media_url(url)
     ydl_opts = {
@@ -41,8 +60,12 @@ def get_media_info(url: str) -> dict:
         "skip_download": True,
         "extractor_args": YTDLP_EXTRACTOR_ARGS,
         "http_headers": YTDLP_HTTP_HEADERS,
+        "js_runtimes": {"node": {}},
         "socket_timeout": 20,
     }
+    cookie_file = get_cookie_file()
+    if cookie_file:
+        ydl_opts["cookiefile"] = cookie_file
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -92,6 +115,8 @@ def get_media_info(url: str) -> dict:
                 logger.debug(f"oEmbed fallback error: {oe_err}")
 
         err_lower = err_msg.lower()
+        if "instagram" in err_lower and ("empty media response" in err_lower or "not granting access" in err_lower or "login" in err_lower):
+            raise RuntimeError("⚠️ Instagram login protection: Instagram requires a login session for this post.")
         if "sign in to confirm" in err_lower or "not a bot" in err_lower:
             raise RuntimeError("⚠️ YouTube verification challenge triggered on this video. Please try another video or retry in a few moments.")
         if "unavailable" in err_lower or "not found" in err_lower or "private" in err_lower:
@@ -134,7 +159,7 @@ def download_media_custom(
         except Exception as e:
             logger.warning(f"Direct thumb download failed: {e}. Falling back to yt-dlp.")
 
-    # 2. General yt-dlp Options with anti-bot mobile player clients
+    # 2. General yt-dlp Options with anti-bot mobile player clients and Node js_runtime
     out_template = os.path.join(output_dir, "%(title).50s [%(id)s].%(ext)s")
     ydl_opts = {
         "outtmpl": out_template,
@@ -144,9 +169,13 @@ def download_media_custom(
         "max_filesize": max_filesize_mb * 1024 * 1024,
         "extractor_args": YTDLP_EXTRACTOR_ARGS,
         "http_headers": YTDLP_HTTP_HEADERS,
+        "js_runtimes": {"node": {}},
         "socket_timeout": 30,
         "retries": 3,
     }
+    cookie_file = get_cookie_file()
+    if cookie_file:
+        ydl_opts["cookiefile"] = cookie_file
 
     if mode == "mp3":
         ydl_opts.update({
@@ -177,40 +206,43 @@ def download_media_custom(
         height_map = {"1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
         h = height_map.get(mode, 720)
         ydl_opts.update({
-            "format": f"best[height<={h}]/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best[filesize<{max_filesize_mb}M]/best",
-            "merge_output_format": "mp4",
+            "format": f"best[height<={h}][ext=mp4]/best[height<={h}]/best[ext=mp4]/bestvideo[height<={h}]+bestaudio/best",
         })
         media_type = "video"
 
+    info = None
+    title = "Media"
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            title = info.get("title", "Media")
+            if info:
+                title = info.get("title", "Media")
     except Exception as primary_err:
         logger.warning(f"Primary format download failed: {primary_err}. Retrying with universal direct format...")
-        ydl_opts["format"] = "best"
-        ydl_opts["merge_output_format"] = "mp4"
+        ydl_opts["format"] = "best[ext=mp4]/best"
+        ydl_opts.pop("merge_output_format", None)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            title = info.get("title", "Media")
+            if info:
+                title = info.get("title", "Media")
+
+    # Locate downloaded file (OUTSIDE except block)
+    downloaded_file = None
+    if info and "requested_downloads" in info and info["requested_downloads"]:
+        downloaded_file = info["requested_downloads"][0].get("filepath")
         
-        # Locate downloaded file
-        downloaded_file = None
-        if "requested_downloads" in info and info["requested_downloads"]:
-            downloaded_file = info["requested_downloads"][0].get("filepath")
-            
-        if not downloaded_file or not os.path.exists(downloaded_file):
-            files = list(Path(output_dir).glob("*"))
-            if files:
-                downloaded_file = str(max(files, key=os.path.getctime))
+    if not downloaded_file or not os.path.exists(downloaded_file):
+        files = list(Path(output_dir).glob("*"))
+        if files:
+            downloaded_file = str(max(files, key=os.path.getctime))
 
-        if not downloaded_file or not os.path.exists(downloaded_file):
-            raise FileNotFoundError("Could not locate downloaded media file.")
+    if not downloaded_file or not os.path.exists(downloaded_file):
+        raise FileNotFoundError("Could not locate downloaded media file.")
 
-        size_mb = round(os.path.getsize(downloaded_file) / (1024 * 1024), 2)
-        return {
-            "file_path": downloaded_file,
-            "title": title,
-            "size_mb": size_mb,
-            "media_type": media_type
-        }
+    size_mb = round(os.path.getsize(downloaded_file) / (1024 * 1024), 2)
+    return {
+        "file_path": downloaded_file,
+        "title": title,
+        "size_mb": size_mb,
+        "media_type": media_type
+    }

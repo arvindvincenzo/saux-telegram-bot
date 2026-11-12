@@ -264,7 +264,13 @@ async def handle_download_callback(callback: CallbackQuery):
                 thumb_url=thumb_url,
                 max_filesize_mb=48
             )
+            if not result or not result.get("file_path"):
+                raise RuntimeError("Could not locate or process downloaded media file.")
+
             file_path = Path(result["file_path"])
+            if not file_path.exists():
+                raise FileNotFoundError("Downloaded media file was not found on disk.")
+
             files_to_clean.append(file_path)
 
             title = result.get("title", data["title"])
@@ -311,7 +317,13 @@ async def handle_download_callback(callback: CallbackQuery):
             clean_err = clean_err.replace("ERROR:", "").replace("[youtube]", "").replace("DownloadError:", "").strip()
 
             err_lower = raw_err.lower()
-            if "not a bot" in err_lower or "sign in" in err_lower:
+            if "instagram" in err_lower and ("login" in err_lower or "empty media response" in err_lower or "not granting access" in err_lower or "unauthorized" in err_lower):
+                user_msg = (
+                    "⚠️ **Instagram Login Protection**\n\n"
+                    "Instagram restricted this reel/post behind authentication.\n"
+                    "💡 *Tip: YouTube, TikTok, and Twitter/X videos download instantly without login!*"
+                )
+            elif "not a bot" in err_lower or "sign in" in err_lower:
                 user_msg = "⚠️ **YouTube Cloud Verification**\nYouTube cloud protection triggered for this video stream. Please try an alternate video link or audio mode."
             elif "unavailable" in err_lower or "not found" in err_lower or "private" in err_lower:
                 user_msg = "⚠️ **Video Unavailable**\nThis video is deleted, private, invalid, or region-locked on YouTube."
