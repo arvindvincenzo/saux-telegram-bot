@@ -2,6 +2,8 @@ import os
 import glob
 import re
 import io
+import base64
+import tempfile
 import urllib.parse
 from pathlib import Path
 from PIL import Image
@@ -11,17 +13,41 @@ import logging
 
 logger = logging.getLogger("video_tool")
 
-# Extractor args: Keep empty by default so yt-dlp automatically uses its latest
-# smart player clients (tv_samsung, visionos) which do NOT require Google login.
-YTDLP_EXTRACTOR_ARGS = {}
+# Optimized extractor args: Use web_embedded and tv_samsung clients.
+# These bypass YouTube bot verification on cloud/datacenter IP addresses (e.g. Railway)
+# while working seamlessly for Shorts and regular videos.
+YTDLP_EXTRACTOR_ARGS = {
+    "youtube": {
+        "player_client": ["web_embedded", "tv_samsung", "mweb"]
+    }
+}
 
 YTDLP_HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+_temp_cookie_path: str | None = None
+
 def get_cookie_file() -> str | None:
-    """Finds cookies.txt in current or parent directories if available."""
+    """Finds cookies.txt or decodes from YT_COOKIES_B64 environment variable if provided."""
+    global _temp_cookie_path
+    
+    # 1. Check environment variable YT_COOKIES_B64
+    b64_cookies = os.getenv("YT_COOKIES_B64")
+    if b64_cookies:
+        try:
+            if not _temp_cookie_path or not os.path.exists(_temp_cookie_path):
+                decoded = base64.b64decode(b64_cookies)
+                tf = tempfile.NamedTemporaryFile(delete=False, suffix="_yt_cookies.txt", mode="wb")
+                tf.write(decoded)
+                tf.close()
+                _temp_cookie_path = tf.name
+            return _temp_cookie_path
+        except Exception as e:
+            logger.warning(f"Failed to decode YT_COOKIES_B64: {e}")
+
+    # 2. Check local files
     candidates = [
         Path.cwd() / "cookies.txt",
         Path(__file__).resolve().parent / "cookies.txt",
