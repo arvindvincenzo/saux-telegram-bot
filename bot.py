@@ -62,7 +62,7 @@ MINI_APP_URL = os.getenv("MINI_APP_URL", "https://saux.si")
 def get_quick_action_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}/browser"),
+            InlineKeyboardButton(text="🌐 Weightless Browser", url=f"{MINI_APP_URL}"),
             InlineKeyboardButton(text="📊 Quota", callback_data="act:quota"),
             InlineKeyboardButton(text="🔄 Reset", callback_data="act:reset")
         ]
@@ -387,7 +387,17 @@ async def handle_text(message: types.Message):
             await status_msg.edit_text(menu_text, reply_markup=keyboard, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error inspecting media: {e}", exc_info=True)
-            await status_msg.edit_text(f"❌ Could not analyze media link: {str(e)}")
+            err_str = str(e)
+            if "Sign in to confirm" in err_str or "confirm you're not a bot" in err_str:
+                user_msg = "⚠️ **YouTube Anti-Bot Protection**\nThis video is restricted by YouTube's cloud verification. Our mobile parser was dispatched; please retry or try an alternate link."
+            elif "Video unavailable" in err_str or "404" in err_str:
+                user_msg = "⚠️ **Video Unavailable**\nThis video is deleted, private, or region-locked on YouTube."
+            else:
+                user_msg = f"❌ **Could not analyze media link:**\n`{err_str[:150]}`"
+            try:
+                await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
+            except Exception:
+                await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard())
         return
 
     # Quota Check for text/search/agent tasks
