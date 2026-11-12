@@ -137,7 +137,8 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48)
             "js_runtimes": {"node": {}},
             "socket_timeout": 20,
             "retries": 2,
-            "format": "best[height<=720][ext=mp4]/best[ext=mp4]/best",
+            "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
         }
         cookie_file = get_cookie_file()
         if cookie_file:
