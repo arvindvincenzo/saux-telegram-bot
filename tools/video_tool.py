@@ -11,12 +11,9 @@ import logging
 
 logger = logging.getLogger("video_tool")
 
-# Extractor args and User-Agent to bypass YouTube and web bot detection
-YTDLP_EXTRACTOR_ARGS = {
-    "youtube": {
-        "player_client": ["tv", "android", "web_embedded"],
-    }
-}
+# Extractor args: Keep empty by default so yt-dlp automatically uses its latest
+# smart player clients (tv_samsung, visionos) which do NOT require Google login.
+YTDLP_EXTRACTOR_ARGS = {}
 
 YTDLP_HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -40,6 +37,12 @@ def clean_media_url(url: str) -> str:
     url = url.strip()
     if "?si-" in url:
         url = url.replace("?si-", "?si=")
+
+    # Strip YouTube tracking parameters like ?si=..., &feature=...
+    if "youtube.com" in url or "youtu.be" in url:
+        url = re.sub(r'([?&])si=[^&]+', '', url)
+        url = re.sub(r'[?&]feature=[^&]+', '', url)
+        url = re.sub(r'[?&]$', '', url)
     
     # Strip Instagram tracking parameters
     if "instagram.com" in url:

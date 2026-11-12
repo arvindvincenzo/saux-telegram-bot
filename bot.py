@@ -338,16 +338,16 @@ async def handle_download_callback(callback: CallbackQuery):
             clean_err = clean_err.replace("ERROR:", "").replace("[youtube]", "").replace("DownloadError:", "").strip()
 
             err_lower = raw_err.lower()
-            if "instagram" in err_lower and ("login" in err_lower or "empty media response" in err_lower or "not granting access" in err_lower or "unauthorized" in err_lower):
+            if "unavailable" in err_lower or "not found" in err_lower or "private" in err_lower or "deleted" in err_lower:
+                user_msg = "⚠️ **Video Unavailable**\nThis video is deleted, private, invalid, or region-locked on YouTube."
+            elif "instagram" in err_lower and ("login" in err_lower or "empty media response" in err_lower or "not granting access" in err_lower or "unauthorized" in err_lower):
                 user_msg = (
                     "⚠️ **Instagram Login Protection**\n\n"
                     "Instagram restricted this reel/post behind authentication.\n"
                     "💡 *Tip: YouTube, TikTok, and Twitter/X videos download instantly without login!*"
                 )
-            elif "not a bot" in err_lower or "sign in" in err_lower:
+            elif "not a bot" in err_lower or "confirm you're not a bot" in err_lower:
                 user_msg = "⚠️ **YouTube Cloud Verification**\nYouTube cloud protection triggered for this video stream. Please try an alternate video link or audio mode."
-            elif "unavailable" in err_lower or "not found" in err_lower or "private" in err_lower:
-                user_msg = "⚠️ **Video Unavailable**\nThis video is deleted, private, invalid, or region-locked on YouTube."
             else:
                 user_msg = f"❌ **Failed to download {label}:**\n{clean_err[:120]}"
 
@@ -581,16 +581,16 @@ async def handle_text(message: types.Message):
                 clean_err = clean_err.replace("ERROR:", "").replace("[youtube]", "").replace("DownloadError:", "").strip()
 
                 err_lower = raw_err.lower()
-                if "instagram" in err_lower and ("login" in err_lower or "empty media response" in err_lower or "not granting access" in err_lower or "unauthorized" in err_lower):
+                if "unavailable" in err_lower or "not found" in err_lower or "private" in err_lower or "deleted" in err_lower:
+                    user_msg = "⚠️ **Video Unavailable**\nThis video is deleted, private, invalid, or region-locked on YouTube."
+                elif "instagram" in err_lower and ("login" in err_lower or "empty media response" in err_lower or "not granting access" in err_lower or "unauthorized" in err_lower):
                     user_msg = (
                         "⚠️ **Instagram Login Protection**\n\n"
                         "Instagram restricted this reel/post behind authentication.\n"
                         "💡 *Tip: YouTube, TikTok, and Twitter/X videos download instantly!*"
                     )
-                elif "not a bot" in err_lower or "sign in" in err_lower:
+                elif "not a bot" in err_lower or "confirm you're not a bot" in err_lower:
                     user_msg = "⚠️ **YouTube Cloud Verification**\nYouTube cloud protection triggered for this video stream. Please try an alternate video link or audio mode."
-                elif "unavailable" in err_lower or "not found" in err_lower or "private" in err_lower:
-                    user_msg = "⚠️ **Video Unavailable**\nThis video is deleted, private, invalid, or region-locked on YouTube."
                 else:
                     user_msg = f"❌ **Failed to download media:**\n{clean_err[:120]}"
 
