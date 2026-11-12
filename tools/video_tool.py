@@ -12,13 +12,12 @@ logger = logging.getLogger("video_tool")
 # Extractor args and User-Agent to bypass YouTube bot detection on cloud/datacenter IPs
 YTDLP_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["android", "ios", "mweb", "tv_embedded"],
-        "player_skip": ["webpage", "configs"],
+        "player_client": ["tv", "android", "web_embedded"],
     }
 }
 
 YTDLP_HTTP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
@@ -178,14 +177,22 @@ def download_media_custom(
         height_map = {"1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
         h = height_map.get(mode, 720)
         ydl_opts.update({
-            "format": f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best[filesize<{max_filesize_mb}M]/best",
+            "format": f"best[height<={h}]/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best[filesize<{max_filesize_mb}M]/best",
             "merge_output_format": "mp4",
         })
         media_type = "video"
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        title = info.get("title", "Media")
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get("title", "Media")
+    except Exception as primary_err:
+        logger.warning(f"Primary format download failed: {primary_err}. Retrying with universal direct format...")
+        ydl_opts["format"] = "best"
+        ydl_opts["merge_output_format"] = "mp4"
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get("title", "Media")
         
         # Locate downloaded file
         downloaded_file = None

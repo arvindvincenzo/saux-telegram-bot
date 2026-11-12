@@ -305,11 +305,24 @@ async def handle_download_callback(callback: CallbackQuery):
 
         except Exception as e:
             logger.error(f"Error in custom download: {e}", exc_info=True)
+            # CRITICAL: Clean error message. NEVER include raw yt-dlp github URLs or stacktraces!
+            raw_err = str(e)
+            clean_err = re.sub(r'https?://\S+', '', raw_err)
+            clean_err = clean_err.replace("ERROR:", "").replace("[youtube]", "").replace("DownloadError:", "").strip()
+
+            err_lower = raw_err.lower()
+            if "not a bot" in err_lower or "sign in" in err_lower:
+                user_msg = "⚠️ **YouTube Cloud Verification**\nYouTube cloud protection triggered for this video stream. Please try an alternate video link or audio mode."
+            elif "unavailable" in err_lower or "not found" in err_lower or "private" in err_lower:
+                user_msg = "⚠️ **Video Unavailable**\nThis video is deleted, private, invalid, or region-locked on YouTube."
+            else:
+                user_msg = f"❌ **Failed to download {label}:**\n{clean_err[:120]}"
+
             try:
-                await callback.message.edit_text(f"❌ Failed to download {label}: {str(e)}")
+                await callback.message.edit_text(user_msg, disable_web_page_preview=True, parse_mode="Markdown")
             except Exception:
                 try:
-                    await callback.message.reply(f"❌ Failed to download {label}: {str(e)}")
+                    await callback.message.edit_text(user_msg, disable_web_page_preview=True)
                 except Exception:
                     pass
         finally:
@@ -395,9 +408,9 @@ async def handle_text(message: types.Message):
             else:
                 user_msg = f"❌ **Could not analyze media link:**\n`{str(e)[:150]}`"
             try:
-                await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
+                await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard(), disable_web_page_preview=True, parse_mode="Markdown")
             except Exception:
-                await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard())
+                await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard(), disable_web_page_preview=True)
         return
 
     # Quota Check for text/search/agent tasks
