@@ -1,0 +1,226 @@
+import asyncio
+import json
+import logging
+import os
+import subprocess
+from pathlib import Path
+import httpx
+
+logger = logging.getLogger("openchamber_tool")
+
+OPENCODE_PORT = 57123
+OPENCODE_AUTH = ("opencode", "sauxagent2026")
+PRIMARY_MODEL = "inkling-2-small-free"
+
+OPENCODE_EXE = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "@openchamberelectron" / "resources" / "opencode-cli" / "opencode.exe"
+
+AGENTIC_SYSTEM_PROMPT = (
+    "<system-reminder>\n"
+    "CRITICAL AGENTIC DIRECTIVE:\n"
+    "• Identity: You are SAUX AI Assistant for SAUX Super Inventory.\n"
+    "• Never state you are an AI model, OpenCode, or Inkling, and never talk about coding workspaces or tools.\n"
+    "• Strict length: Exactly 1, 2, or 3 lines maximum.\n"
+    "• When live facts are provided in <live-web-data>, answer strictly and accurately from those live facts.\n"
+    "• Never use outdated or pre-2026 historical training memory when live facts are present.\n"
+    "• Direct, helpful answer. No greetings, no preamble. Jump straight to the point.\n"
+    "</system-reminder>\n\n"
+)
+
+async def ensure_opencode_service():
+    """Ensures opencode serve background process is running on port 57123."""
+    if await is_openchamber_ready():
+        return True
+    
+    if OPENCODE_EXE.exists():
+        logger.info(f"Starting opencode server on port {OPENCODE_PORT}...")
+        env = os.environ.copy()
+        env["OPENCODE_SERVER_PASSWORD"] = "sauxagent2026"
+        try:
+            subprocess.Popen(
+                [str(OPENCODE_EXE), "serve", "--port", str(OPENCODE_PORT)],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            )
+            for _ in range(10):
+                await asyncio.sleep(0.5)
+                if await is_openchamber_ready():
+                    logger.info("OpenCode server is up and responsive!")
+                    return True
+        except Exception as e:
+            logger.error(f"Failed to auto-spawn OpenCode: {e}")
+    return False
+
+async def is_openchamber_ready() -> bool:
+    """Checks if OpenCode server is healthy and responding on port 57123."""
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(f"http://127.0.0.1:{OPENCODE_PORT}/api/session", auth=OPENCODE_AUTH)
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+async def create_fresh_session() -> str:
+    """Creates a brand new OpenCode session pinned to inkling-2-small-free."""
+    await ensure_opencode_service()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"http://127.0.0.1:{OPENCODE_PORT}/api/session",
+            auth=OPENCODE_AUTH,
+            json={},
+            headers={"Content-Type": "application/json"}
+        )
+        resp.raise_for_status()
+        new_id = resp.json().get("data", {}).get("id")
+        if not new_id:
+            raise RuntimeError("Failed to obtain session ID.")
+
+        # Pin directly to inkling-2-small-free
+        try:
+            await client.post(
+                f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{new_id}/model",
+                auth=OPENCODE_AUTH,
+                json={"model": {"providerID": "opencode", "id": PRIMARY_MODEL}},
+                headers={"Content-Type": "application/json"}
+            )
+        except Exception:
+            pass
+        return new_id
+
+async def _poll_for_answer(session_id: str, prompt: str, timeout_seconds: int = 20) -> str:
+    """Submits prompt and polls for completed assistant response."""
+    full_prompt = f"{AGENTIC_SYSTEM_PROMPT}{prompt.strip()}"
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        # 1. Fetch current message IDs
+        try:
+            r = await client.get(f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{session_id}/message", auth=OPENCODE_AUTH)
+            prev_ids = {m.get("id") for m in r.json().get("data", [])} if r.status_code == 200 else set()
+        except Exception:
+            prev_ids = set()
+
+        # 2. Submit prompt
+        p_resp = await client.post(
+            f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{session_id}/prompt",
+            auth=OPENCODE_AUTH,
+            json={"text": full_prompt},
+            headers={"Content-Type": "application/json"}
+        )
+        if p_resp.status_code != 200:
+            raise RuntimeError(f"Prompt rejected ({p_resp.status_code}): {p_resp.text}")
+
+        # 3. Poll for reply
+        start_time = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start_time < timeout_seconds:
+            await asyncio.sleep(0.5)
+            msg_resp = await client.get(
+                f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{session_id}/message",
+                auth=OPENCODE_AUTH
+            )
+            if msg_resp.status_code != 200:
+                continue
+
+            all_msgs = msg_resp.json().get("data", [])
+            new_msgs = [m for m in all_msgs if m.get("id") not in prev_ids]
+            
+            idle_completed = any(m.get("type") == "idle" for m in new_msgs)
+            
+            for m in reversed(new_msgs):
+                if m.get("type") == "assistant":
+                    content = m.get("content", [])
+                    texts = [c.get("text", "") for c in content if c.get("type") == "text" and c.get("text", "").strip()]
+                    if texts and (idle_completed or m.get("finish") == "stop"):
+                        raw_reply = "\n".join(texts).strip()
+                        lines = [l.strip() for l in raw_reply.splitlines() if l.strip()]
+                        return "\n".join(lines[:3]) if len(lines) > 3 else "\n".join(lines)
+
+    raise TimeoutError("Model took too long to complete.")
+
+async def generate_chat_reply(session_id: str | None, prompt: str) -> tuple[str, str]:
+    """
+    Submits prompt to inkling-2-small-free with auto-healing,
+    with seamless fallback to Gemini/Groq/Web extraction when running on cloud hosts.
+    Returns: (reply_text, valid_session_id)
+    """
+    is_ready = await is_openchamber_ready()
+    if is_ready or OPENCODE_EXE.exists():
+        await ensure_opencode_service()
+
+        # Step 1: Try existing session if available
+        if session_id and session_id != "cloud-fallback":
+            try:
+                reply = await _poll_for_answer(session_id, prompt, timeout_seconds=15)
+                return reply, session_id
+            except Exception as e:
+                logger.warning(f"Session {session_id} stalled ({e}). Auto-healing with fresh session...")
+
+        # Step 2: Auto-heal with brand new session
+        try:
+            fresh_session_id = await create_fresh_session()
+            reply = await _poll_for_answer(fresh_session_id, prompt, timeout_seconds=20)
+            return reply, fresh_session_id
+        except Exception as e:
+            logger.warning(f"Local OpenCode failed ({e}). Proceeding to cloud fallback...")
+
+    # Cloud / Headless Fallback:
+    from config import gemini_key_pool, groq_key_pool
+    gem_key = gemini_key_pool.get_key()
+    if gem_key:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gem_key}"
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(url, json={
+                    "contents": [{"parts": [{"text": f"{AGENTIC_SYSTEM_PROMPT}{prompt}"}]}],
+                    "generationConfig": {"maxOutputTokens": 300, "temperature": 0.3}
+                })
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+                        lines = [l.strip() for l in text.splitlines() if l.strip()]
+                        return "\n".join(lines[:3]), "gemini-cloud"
+        except Exception as e:
+            logger.warning(f"Gemini cloud fallback error: {e}")
+
+    groq_key = groq_key_pool.get_key()
+    if groq_key:
+        try:
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {groq_key}"},
+                    json={
+                        "model": "llama-3.3-70b-versatile",
+                        "messages": [
+                            {"role": "system", "content": AGENTIC_SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": 250,
+                        "temperature": 0.3
+                    }
+                )
+                if resp.status_code == 200:
+                    text = resp.json()["choices"][0]["message"]["content"].strip()
+                    lines = [l.strip() for l in text.splitlines() if l.strip()]
+                    return "\n".join(lines[:3]), "groq-cloud"
+        except Exception as e:
+            logger.warning(f"Groq cloud fallback error: {e}")
+
+    # Fallback to direct context extraction if live web data was fetched
+    if "<live-web-data>" in prompt:
+        import re
+        snippets = re.findall(r"•\s*\[NEWS\]\s*([^:\n]+):\s*([^\n]+)", prompt)
+        if not snippets:
+            snippets = re.findall(r"•\s*([^\n]+)", prompt)
+        if snippets:
+            clean_lines = []
+            for s in snippets[:3]:
+                if isinstance(s, tuple):
+                    clean_lines.append(f"• {s[0]}: {s[1][:120]}...")
+                else:
+                    clean_lines.append(f"• {s[:140]}...")
+            return "\n".join(clean_lines), "web-summary"
+
+    return "🤖 **SAUX Agent Online**\nSend an image with caption (compress/stretch), any video/post URL to download, or `search <query>` for live web results.", "cloud-fallback"
