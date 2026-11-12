@@ -151,6 +151,7 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48,
             "format": "bestvideo+bestaudio/best",
             "merge_output_format": "mp4",
             "http_headers": YTDLP_HTTP_HEADERS,
+            "js_runtimes": {"node": {}, "deno": {}},
             "socket_timeout": 30,
             "retries": 3,
         }
