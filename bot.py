@@ -62,7 +62,7 @@ MINI_APP_URL = os.getenv("MINI_APP_URL", "https://saux.si")
 def get_quick_action_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🌐 Weightless Browser", url=f"{MINI_APP_URL}"),
+            InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
             InlineKeyboardButton(text="📊 Quota", callback_data="act:quota"),
             InlineKeyboardButton(text="🔄 Reset", callback_data="act:reset")
         ]
@@ -508,7 +508,7 @@ async def main():
         from aiogram.types import MenuButtonWebApp, WebAppInfo
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(
-                text="🌐 Weightless Browser",
+                text="🛍️ SAUX Crate",
                 web_app=WebAppInfo(url="https://saux.si")
             )
         )
