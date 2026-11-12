@@ -29,16 +29,36 @@ YTDLP_HTTP_HEADERS = {
 
 _temp_cookie_path: str | None = None
 
+def get_proxy() -> str | None:
+    """Reads residential proxy URL from environment (HTTP/SOCKS5)."""
+    proxy = os.getenv("YTDLP_PROXY") or os.getenv("PROXY_URL")
+    if proxy and proxy.strip():
+        return proxy.strip()
+    return None
+
 def get_cookie_file() -> str | None:
-    """Finds cookies.txt or decodes from YT_COOKIES_B64 environment variable if provided."""
+    """Finds cookies.txt or decodes from YT_COOKIES / YT_COOKIES_B64 environment variable if provided."""
     global _temp_cookie_path
     
-    # 1. Check environment variable YT_COOKIES_B64
-    b64_cookies = os.getenv("YT_COOKIES_B64")
-    if b64_cookies:
+    # 1. Check raw YT_COOKIES environment variable
+    raw_cookies = os.getenv("YT_COOKIES")
+    if raw_cookies and raw_cookies.strip():
         try:
             if not _temp_cookie_path or not os.path.exists(_temp_cookie_path):
-                decoded = base64.b64decode(b64_cookies)
+                tf = tempfile.NamedTemporaryFile(delete=False, suffix="_yt_cookies.txt", mode="w", encoding="utf-8")
+                tf.write(raw_cookies)
+                tf.close()
+                _temp_cookie_path = tf.name
+            return _temp_cookie_path
+        except Exception as e:
+            logger.warning(f"Failed to write YT_COOKIES: {e}")
+
+    # 2. Check base64 encoded YT_COOKIES_B64
+    b64_cookies = os.getenv("YT_COOKIES_B64")
+    if b64_cookies and b64_cookies.strip():
+        try:
+            if not _temp_cookie_path or not os.path.exists(_temp_cookie_path):
+                decoded = base64.b64decode(b64_cookies.strip())
                 tf = tempfile.NamedTemporaryFile(delete=False, suffix="_yt_cookies.txt", mode="wb")
                 tf.write(decoded)
                 tf.close()
@@ -47,12 +67,18 @@ def get_cookie_file() -> str | None:
         except Exception as e:
             logger.warning(f"Failed to decode YT_COOKIES_B64: {e}")
 
-    # 2. Check local files
+    # 3. Check local cookie files and cookies directory
     candidates = [
         Path.cwd() / "cookies.txt",
         Path(__file__).resolve().parent / "cookies.txt",
         Path(__file__).resolve().parent.parent / "cookies.txt",
     ]
+    # Check for cookies/*.txt multi-account pool
+    cookies_dir = Path.cwd() / "cookies"
+    if cookies_dir.is_dir():
+        for cf in sorted(cookies_dir.glob("*.txt")):
+            candidates.append(cf)
+
     for p in candidates:
         if p.is_file():
             return str(p)
@@ -116,6 +142,9 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48)
         cookie_file = get_cookie_file()
         if cookie_file:
             ydl_opts["cookiefile"] = cookie_file
+        proxy = get_proxy()
+        if proxy:
+            ydl_opts["proxy"] = proxy
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -229,6 +258,9 @@ def get_media_info(url: str) -> dict:
     cookie_file = get_cookie_file()
     if cookie_file:
         ydl_opts["cookiefile"] = cookie_file
+    proxy = get_proxy()
+    if proxy:
+        ydl_opts["proxy"] = proxy
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -337,6 +369,9 @@ def download_media_custom(
     cookie_file = get_cookie_file()
     if cookie_file:
         ydl_opts["cookiefile"] = cookie_file
+    proxy = get_proxy()
+    if proxy:
+        ydl_opts["proxy"] = proxy
 
     if mode == "mp3":
         ydl_opts.update({
