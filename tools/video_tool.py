@@ -122,69 +122,53 @@ def clean_media_url(url: str) -> str:
 
 def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48, user_id: int | None = None) -> dict:
     """
-    Ultra-fast single-pass direct media downloader with multi-stage client fallback.
-    Downloads the video immediately in optimal progressive MP4 (720p/HD) in under seconds,
-    extracting title, thumbnail, and duration in the same single network stream.
+    Direct high-performance media downloader.
+    Downloads the video immediately with optimal audio/video streams,
+    extracting title, thumbnail, and duration in a single pass.
     """
     url = clean_media_url(url)
     os.makedirs(output_dir, exist_ok=True)
     out_template = os.path.join(output_dir, "%(title).50s [%(id)s].%(ext)s")
-    
-    # Multi-Stage Client Fallback strategy for maximum cloud resilience
-    client_stages = [
-        None,  # Stage 1: Modern adaptive client selection (visionos/web/android with JS challenge solver)
-        ["web", "web_embedded"],  # Stage 2: Web & embedded clients
-        ["tv_samsung", "mweb"],   # Stage 3: TV & mobile fallback
-    ]
-    
-    # Format candidates: Try merged 1080p HD first, then single-stream progressive MP4 fallback
-    format_candidates = [
-        ("bestvideo[height<=1080]+bestaudio/best[height<=1080]/best[ext=mp4]/best", True),
-        ("best[height<=1080][ext=mp4]/best[ext=mp4]/best", False)
-    ]
-    
+
+    cookie_file = get_cookie_file()
+    proxy = get_proxy(user_id=user_id)
+
+    # Direct connection first (like native terminal yt-dlp), then proxy fallback if IP blocked
+    connection_attempts = [None]
+    if proxy:
+        connection_attempts.append(proxy)
+
     info = None
     title = "Media"
     last_err = None
 
-    for attempt_idx, stage_clients in enumerate(client_stages):
-        # Rotate dedicated sticky proxy per attempt to bypass IP limits while preventing mid-stream 403
-        proxy = get_proxy(user_id=user_id, attempt=attempt_idx)
-        for fmt, merge_mp4 in format_candidates:
-            ydl_opts = {
-                "outtmpl": out_template,
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "max_filesize": max_filesize_mb * 1024 * 1024,
-                "http_headers": YTDLP_HTTP_HEADERS,
-                "js_runtimes": {"node": {}},
-                "socket_timeout": 25,
-                "retries": 2,
-                "format": fmt,
-            }
-            if merge_mp4:
-                ydl_opts["merge_output_format"] = "mp4"
-            if stage_clients:
-                ydl_opts["extractor_args"] = {"youtube": {"player_client": stage_clients}}
-            cookie_file = get_cookie_file()
-            if cookie_file:
-                ydl_opts["cookiefile"] = cookie_file
-            if proxy:
-                ydl_opts["proxy"] = proxy
+    for conn_proxy in connection_attempts:
+        ydl_opts = {
+            "outtmpl": out_template,
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "format": "bestvideo+bestaudio/best",
+            "merge_output_format": "mp4",
+            "http_headers": YTDLP_HTTP_HEADERS,
+            "socket_timeout": 30,
+            "retries": 3,
+        }
+        if cookie_file:
+            ydl_opts["cookiefile"] = cookie_file
+        if conn_proxy:
+            ydl_opts["proxy"] = conn_proxy
 
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    if info:
-                        title = info.get("title", "Media")
-                        break
-            except Exception as e:
-                last_err = e
-                logger.warning(f"Stage clients={stage_clients} fmt={fmt} proxy={proxy} failed: {e}. Trying next...")
-                continue
-        if info:
-            break
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    title = info.get("title", "Media")
+                    break
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Download attempt (proxy={bool(conn_proxy)}) failed: {e}. Trying next...")
+            continue
 
     if not info and last_err:
         raise last_err
@@ -431,7 +415,8 @@ def download_media_custom(
         height_map = {"4k": 2160, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
         h = height_map.get(mode, 720)
         ydl_opts.update({
-            "format": f"best[height<={h}][ext=mp4]/best[height<={h}]/best[ext=mp4]/bestvideo[height<={h}]+bestaudio/best",
+            "format": f"bestvideo[height<={h}]+bestaudio/bestvideo+bestaudio/best",
+            "merge_output_format": "mp4",
         })
         media_type = "video"
 

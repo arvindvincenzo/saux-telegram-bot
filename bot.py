@@ -611,6 +611,8 @@ async def handle_text(message: types.Message):
                     )
                 elif "not a bot" in err_lower or "confirm you're not a bot" in err_lower:
                     user_msg = "⚠️ **YouTube Cloud Verification**\nYouTube cloud protection triggered for this video stream. Please try an alternate video link or audio mode."
+                elif "format is not available" in err_lower or "list-formats" in err_lower:
+                    user_msg = "⚠️ **Format Unavailable**\nThis video stream could not be converted. Please try an alternate link or audio mode."
                 else:
                     user_msg = f"❌ **Failed to download media:**\n{clean_err[:120]}"
 
