@@ -80,7 +80,7 @@ def clean_media_url(url: str) -> str:
 
 def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48) -> dict:
     """
-    Ultra-fast single-pass direct media downloader.
+    Ultra-fast single-pass direct media downloader with multi-stage client fallback.
     Downloads the video immediately in optimal progressive MP4 (720p/HD) in under seconds,
     extracting title, thumbnail, and duration in the same single network stream.
     """
@@ -88,29 +88,48 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48)
     os.makedirs(output_dir, exist_ok=True)
     out_template = os.path.join(output_dir, "%(title).50s [%(id)s].%(ext)s")
     
-    ydl_opts = {
-        "outtmpl": out_template,
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "max_filesize": max_filesize_mb * 1024 * 1024,
-        "extractor_args": YTDLP_EXTRACTOR_ARGS,
-        "http_headers": YTDLP_HTTP_HEADERS,
-        "js_runtimes": {"node": {}},
-        "socket_timeout": 20,
-        "retries": 3,
-        "format": "best[height<=720][ext=mp4]/best[ext=mp4]/best",
-    }
-    cookie_file = get_cookie_file()
-    if cookie_file:
-        ydl_opts["cookiefile"] = cookie_file
-
+    # 3-Stage Client Fallback strategy for maximum cloud resilience
+    client_stages = [
+        ["web_embedded", "tv_samsung"],
+        ["mweb", "android_vr"],
+        ["default"]
+    ]
+    
     info = None
     title = "Media"
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        if info:
-            title = info.get("title", "Media")
+    last_err = None
+
+    for stage_clients in client_stages:
+        ydl_opts = {
+            "outtmpl": out_template,
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "max_filesize": max_filesize_mb * 1024 * 1024,
+            "extractor_args": {"youtube": {"player_client": stage_clients}},
+            "http_headers": YTDLP_HTTP_HEADERS,
+            "js_runtimes": {"node": {}},
+            "socket_timeout": 20,
+            "retries": 2,
+            "format": "best[height<=720][ext=mp4]/best[ext=mp4]/best",
+        }
+        cookie_file = get_cookie_file()
+        if cookie_file:
+            ydl_opts["cookiefile"] = cookie_file
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    title = info.get("title", "Media")
+                    break
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Stage with clients {stage_clients} failed: {e}. Trying next stage...")
+            continue
+
+    if not info and last_err:
+        raise last_err
 
     downloaded_file = None
     if info and "requested_downloads" in info and info["requested_downloads"]:
