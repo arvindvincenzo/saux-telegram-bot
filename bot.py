@@ -529,7 +529,7 @@ async def handle_text(message: types.Message):
 
         async with TASK_SEMAPHORE:
             try:
-                result = download_media_instant(url=url, output_dir=user_out_dir)
+                result = download_media_instant(url=url, output_dir=user_out_dir, user_id=user_id)
                 file_path = Path(result["file_path"])
                 files_to_clean.append(file_path)
 

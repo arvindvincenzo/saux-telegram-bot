@@ -30,13 +30,27 @@ YTDLP_HTTP_HEADERS = {
 }
 
 _temp_cookie_path: str | None = None
+_PROXY_COUNTER = 0
 
-def get_proxy() -> str | None:
-    """Reads residential proxy URL from environment (HTTP/SOCKS5)."""
-    proxy = os.getenv("YTDLP_PROXY") or os.getenv("PROXY_URL")
-    if proxy and proxy.strip():
-        return proxy.strip()
-    return None
+def get_proxy(user_id: int | None = None, attempt: int = 0) -> str | None:
+    """
+    Returns a dedicated sticky proxy from the pool (1-10) for this user's download session.
+    Keeps the IP constant for the duration of the video+audio chunk merge to prevent HTTP 403,
+    while rotating across different user downloads.
+    """
+    global _PROXY_COUNTER
+    env_proxy = os.getenv("YTDLP_PROXY") or os.getenv("PROXY_URL")
+    if env_proxy and env_proxy.strip():
+        return env_proxy.strip()
+
+    # Webshare sticky pool (indexes 1 through 10)
+    if user_id:
+        idx = ((abs(hash(str(user_id))) + attempt) % 10) + 1
+    else:
+        _PROXY_COUNTER = (_PROXY_COUNTER % 10) + 1
+        idx = ((_PROXY_COUNTER + attempt - 1) % 10) + 1
+        
+    return f"http://gyeuukdz-{idx}:kvfs9tl7lopg@p.webshare.io:80/"
 
 def get_cookie_file() -> str | None:
     """Finds cookies.txt or decodes from YT_COOKIES / YT_COOKIES_B64 environment variable if provided."""
@@ -106,7 +120,7 @@ def clean_media_url(url: str) -> str:
             
     return url
 
-def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48) -> dict:
+def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48, user_id: int | None = None) -> dict:
     """
     Ultra-fast single-pass direct media downloader with multi-stage client fallback.
     Downloads the video immediately in optimal progressive MP4 (720p/HD) in under seconds,
@@ -133,7 +147,9 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48)
     title = "Media"
     last_err = None
 
-    for stage_clients in client_stages:
+    for attempt_idx, stage_clients in enumerate(client_stages):
+        # Rotate dedicated sticky proxy per attempt to bypass IP limits while preventing mid-stream 403
+        proxy = get_proxy(user_id=user_id, attempt=attempt_idx)
         for fmt, merge_mp4 in format_candidates:
             ydl_opts = {
                 "outtmpl": out_template,
@@ -154,7 +170,6 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48)
             cookie_file = get_cookie_file()
             if cookie_file:
                 ydl_opts["cookiefile"] = cookie_file
-            proxy = get_proxy()
             if proxy:
                 ydl_opts["proxy"] = proxy
 
@@ -166,7 +181,7 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48)
                         break
             except Exception as e:
                 last_err = e
-                logger.warning(f"Stage clients={stage_clients} fmt={fmt} failed: {e}. Trying next...")
+                logger.warning(f"Stage clients={stage_clients} fmt={fmt} proxy={proxy} failed: {e}. Trying next...")
                 continue
         if info:
             break
