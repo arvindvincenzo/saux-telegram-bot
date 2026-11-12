@@ -58,11 +58,15 @@ def parse_image_intent(caption: str) -> dict:
     return {"action": "compress", "target_kb": 500}
 
 MINI_APP_URL = os.getenv("MINI_APP_URL", "https://saux.si")
+DISCORD_URL = "https://discord.gg/q8RTdttSa"
 
 def get_quick_action_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
+            InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+        ],
+        [
             InlineKeyboardButton(text="📊 Quota", callback_data="act:quota"),
             InlineKeyboardButton(text="🔄 Reset", callback_data="act:reset")
         ]
@@ -89,29 +93,27 @@ async def cmd_start(message: types.Message):
     stats = db.get_user_stats(user_id, DAILY_USER_LIMIT)
 
     welcome_text = (
-        "🤖 **Autonomous AI Agent**\n\n"
+        "🤖 **SAUX Super Intelligence — Autonomous AI Agent**\n\n"
         f"⚡ **Agent Usage Limit:** `{stats['remaining']}` / `{DAILY_USER_LIMIT}` units available today.\n\n"
-        "**Core Agentic Capabilities:**\n"
-        "• 🧠 **Direct Agentic Tasks:** Ask any technical task, problem, or query (strict 1–3 line answers)\n"
-        "• 🖼 **Image Operations:** Send a photo with caption `compress to 300kb`, `stretch 2x wide`, or `convert to png`\n"
-        "• 🎬 **Media Extraction:** Send any YouTube, Shorts, TikTok, or Reels link — choose quality (1080p/720p/480p/360p), MP3, or thumbnail\n"
-        "• 📷 **Post Downloader:** Send post link to download images/captions\n"
-        "• 🔍 **Live Search Intelligence:** Send `search <topic>` for real-time web facts\n\n"
+        "**Core Capabilities:**\n"
+        "• 🧠 **Autonomous Research & Q&A:** Ask any complex question, research topics, or get concise problem solving\n"
+        "• 🔍 **Live Web Intelligence:** Send `search <topic>` for real-time web facts & deep research summaries\n"
+        "• ⚡ **Instant Media Downloader:** Paste any YouTube, Shorts, TikTok, or Reels URL for sub-second auto-downloads with 1KB smart compression\n"
+        "• 🖼 **Image Engineering:** Send any photo with caption `compress this to 100kb` or `stretch 2x`\n\n"
         "Commands:\n"
         "• /quota — View your current agent usage limit\n"
-        "• /new or /reset — Reset agent context"
+        "• /new or /reset — Reset agent conversation context"
     )
     await message.reply(welcome_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     help_text = (
-        "🛠 **Agent Commands & Usage:**\n\n"
-        "1. **Agentic Tasks:** Simply type your task or question.\n"
-        "2. **Compress Photo:** Send image with caption `compress this to 400kb`\n"
-        "3. **Stretch Photo:** Send image with caption `stretch this 2x wide`\n"
-        "4. **Download Video / Post:** Send any video/post URL ➔ Select Quality/Format from interactive menu\n"
-        "5. **Web Search:** Send `search <query>`\n\n"
+        "🛠 **SAUX Super Intelligence — Agent Manual:**\n\n"
+        "1. **Research & Questions:** Type any question, code request, or analysis directly in chat.\n"
+        "2. **Live Web Search:** Type `search <query>` to perform autonomous real-time web investigation.\n"
+        "3. **Instant Media Extraction:** Paste any video or post URL to receive instant high-speed downloads, 4K options, and 1KB thumbnails.\n"
+        "4. **Compress Photos:** Send an image with caption `compress this to 300kb`.\n\n"
         "• /quota — Check remaining agent usage limit\n"
         "• /new — Reset conversation context"
     )
@@ -226,6 +228,13 @@ async def handle_download_callback(callback: CallbackQuery):
         await callback.answer("Session expired. Please paste the link again.", show_alert=True)
         return
 
+    if mode == "4k":
+        await callback.answer(
+            "⭐ 4K Ultra HD is an exclusive SAUX Pro feature!\n\nDefault 1080p Full HD is already delivered. Join our Discord for 4K AI upscaling access!",
+            show_alert=True
+        )
+        return
+
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
@@ -294,7 +303,10 @@ async def handle_download_callback(callback: CallbackQuery):
             elif media_type == "image":
                 cmp_markup = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🗜️ Compress into 1KB (Smart)", callback_data=f"cmp:{token}")],
-                    [InlineKeyboardButton(text="⚡ SAUX Crate", url=f"{MINI_APP_URL}")]
+                    [
+                        InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
+                        InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+                    ]
                 ])
                 if token in PENDING_DOWNLOADS:
                     PENDING_DOWNLOADS[token]["thumb_path"] = str(file_path)
@@ -438,7 +450,7 @@ async def handle_text(message: types.Message):
     user_prompt = message.text.strip()
     detected_urls = URL_REGEX.findall(user_prompt)
 
-    # 1. Instant Direct Video / Media Auto-Download Pipeline
+    # 1. Instant Direct Video / Media Auto-Download Pipeline (With LLM-style CDN Media Cache)
     if detected_urls:
         url = detected_urls[0]
         allowed, remaining, limit = db.check_and_consume_quota(user_id, username, DAILY_USER_LIMIT)
@@ -449,8 +461,65 @@ async def handle_text(message: types.Message):
             )
             return
 
-        status_msg = await message.reply("⚡ *Downloading video instantly...*", parse_mode="Markdown")
         token = uuid.uuid4().hex[:8]
+
+        action_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⭐ 4K Ultra HD (Premium)", callback_data=f"dl:{token}:4k")
+            ],
+            [
+                InlineKeyboardButton(text="🖼️ Get Thumbnail", callback_data=f"dl:{token}:thumbnail"),
+                InlineKeyboardButton(text="🎵 Extract MP3", callback_data=f"dl:{token}:mp3")
+            ],
+            [
+                InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
+                InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+            ]
+        ])
+
+        img_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗜️ Compress into 1KB (Smart)", callback_data=f"cmp:{token}")],
+            [
+                InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
+                InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+            ]
+        ])
+
+        # A. Check LLM-Style Fast Media Cache (Instant 0.1s Zero-Download Delivery)
+        cached = db.get_cached_media(url)
+        if cached:
+            PENDING_DOWNLOADS[token] = {
+                "url": url,
+                "title": cached["title"],
+                "thumb_url": cached.get("thumb_url"),
+                "thumb_path": None,
+                "user_id": user_id
+            }
+            caption = (
+                f"🎬 **{cached['title'][:65]}**\n"
+                f"• Quality: `⚡ 1080p HD (Instant Cache 0.1s)` | Size: `{cached['size_mb']} MB`\n\n"
+                f"🤖 **SAUX Super Intelligence** — Autonomous AI Agent.\n"
+                f"Ask me any question, research topics, or search the live web!\n"
+                f"*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
+            )
+            if cached.get("media_type") == "image":
+                await message.reply_document(
+                    document=cached["file_id"],
+                    caption=caption,
+                    reply_markup=img_keyboard,
+                    parse_mode="Markdown"
+                )
+            else:
+                await message.reply_video(
+                    video=cached["file_id"],
+                    caption=caption,
+                    reply_markup=action_keyboard,
+                    parse_mode="Markdown"
+                )
+            return
+
+        # B. Fresh Download Pipeline
+        status_msg = await message.reply("⚡ *Downloading video in 1080p HD...*", parse_mode="Markdown")
         user_out_dir = str(TEMP_DIR / f"dl_{user_id}_{token}")
         files_to_clean = []
 
@@ -473,44 +542,32 @@ async def handle_text(message: types.Message):
                     "user_id": user_id
                 }
 
-                action_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text="💎 1080p Full HD", callback_data=f"dl:{token}:1080p"),
-                        InlineKeyboardButton(text="💎 4K Ultra HD", callback_data=f"dl:{token}:4k")
-                    ],
-                    [
-                        InlineKeyboardButton(text="🖼️ Get Thumbnail", callback_data=f"dl:{token}:thumbnail"),
-                        InlineKeyboardButton(text="🎵 Extract MP3", callback_data=f"dl:{token}:mp3")
-                    ],
-                    [
-                        InlineKeyboardButton(text="⚡ SAUX Crate", url=f"{MINI_APP_URL}")
-                    ]
-                ])
-
                 caption = (
                     f"🎬 **{title[:65]}**\n"
-                    f"• Quality: `⚡ Instant HD` | Size: `{size_mb} MB`\n"
+                    f"• Quality: `⚡ 1080p HD (Compressed & High Clarity)` | Size: `{size_mb} MB`\n\n"
+                    f"🤖 **SAUX Super Intelligence** — Autonomous AI Agent.\n"
+                    f"Ask me any question, research topics, or search the live web!\n"
                     f"*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
                 )
 
                 if media_type == "image":
-                    img_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🗜️ Compress into 1KB (Smart)", callback_data=f"cmp:{token}")],
-                        [InlineKeyboardButton(text="⚡ SAUX Crate", url=f"{MINI_APP_URL}")]
-                    ])
-                    await message.reply_document(
+                    sent = await message.reply_document(
                         document=FSInputFile(str(file_path)),
                         caption=caption,
                         reply_markup=img_keyboard,
                         parse_mode="Markdown"
                     )
+                    if sent.document:
+                        db.set_cached_media(url, sent.document.file_id, "image", title, size_mb, thumb_url)
                 else:
-                    await message.reply_video(
+                    sent = await message.reply_video(
                         video=FSInputFile(str(file_path)),
                         caption=caption,
                         reply_markup=action_keyboard,
                         parse_mode="Markdown"
                     )
+                    if sent.video:
+                        db.set_cached_media(url, sent.video.file_id, "video", title, size_mb, thumb_url, result.get("duration", 0))
 
                 try:
                     await status_msg.delete()

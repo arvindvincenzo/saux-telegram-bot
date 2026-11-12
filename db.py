@@ -23,6 +23,18 @@ def init_db():
                 last_active TEXT
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS media_cache (
+                url TEXT PRIMARY KEY,
+                file_id TEXT,
+                media_type TEXT,
+                title TEXT,
+                size_mb REAL,
+                thumb_url TEXT,
+                duration INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
 
 def _get_current_date() -> str:
@@ -109,6 +121,36 @@ def clear_user_session(user_id: int) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+def get_cached_media(url: str) -> dict | None:
+    """Retrieves instantly cached Telegram file_id (like LLM KV cache for zero-latency playback)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT file_id, media_type, title, size_mb, thumb_url, duration FROM media_cache WHERE url = ?",
+            (url.strip(),)
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "file_id": row[0],
+                "media_type": row[1],
+                "title": row[2],
+                "size_mb": row[3],
+                "thumb_url": row[4],
+                "duration": row[5]
+            }
+        return None
+
+def set_cached_media(url: str, file_id: str, media_type: str, title: str, size_mb: float, thumb_url: str = None, duration: int = 0):
+    """Caches Telegram file_id for sub-millisecond instant re-delivery."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO media_cache (url, file_id, media_type, title, size_mb, thumb_url, duration)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (url.strip(), file_id, media_type, title, size_mb, thumb_url, duration))
         conn.commit()
 
 init_db()
