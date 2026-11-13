@@ -49,6 +49,25 @@ def cleanup_temp_dir():
     except Exception:
         pass
 
+def is_image_edit_request(caption: str | None) -> bool:
+    """Determines if the user explicitly wants image editing (compression, stretch, convert)."""
+    if not caption:
+        return False
+    text = caption.lower().strip()
+    edit_keywords = [
+        "compress", "shrink", "reduce size", "smaller size", "1kb", "ultra compress",
+        "stretch", "resize", "scale", "aspect ratio", "wide"
+    ]
+    if any(k in text for k in edit_keywords):
+        return True
+    if re.search(r"\b\d+\s*(?:kb|mb|k)\b", text):
+        return True
+    if re.search(r"\b(?:convert|save|export)\s+(?:to|as)\s+(?:png|webp|jpg|jpeg)\b", text):
+        return True
+    if re.search(r"\bto\s+(?:png|webp|jpg|jpeg)\b", text):
+        return True
+    return False
+
 def parse_image_intent(caption: str) -> dict:
     """Extracts agentic intent from natural language image captions."""
     text = caption.lower().strip()
@@ -68,11 +87,11 @@ def parse_image_intent(caption: str) -> dict:
         return {"action": "compress", "target_kb": int(float(mb_match.group(1)) * 1024)}
     
     # 3. Format conversion
-    if "png" in text:
+    if re.search(r"\bpng\b", text):
         return {"action": "convert", "target_format": "PNG"}
-    elif "webp" in text:
+    elif re.search(r"\bwebp\b", text):
         return {"action": "convert", "target_format": "WEBP"}
-    elif "jpg" in text or "jpeg" in text:
+    elif re.search(r"\b(?:jpe?g)\b", text):
         return {"action": "convert", "target_format": "JPEG"}
         
     return {"action": "compress", "target_kb": 500}
@@ -109,17 +128,13 @@ async def handle_quick_actions(callback: CallbackQuery):
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-    user_id = message.from_user.id
-    stats = db.get_user_stats(user_id, DAILY_USER_LIMIT)
-
     welcome_text = (
         "🤖 **SAUX Super Intelligence — Autonomous AI Agent**\n\n"
-        f"⚡ **Agent Usage Limit:** `{stats['remaining']}` / `{DAILY_USER_LIMIT}` units available today.\n\n"
         "**Core Capabilities:**\n"
-        "• 🧠 **Autonomous Research & Q&A:** Ask any complex question, research topics, or get concise problem solving\n"
+        "• 🧠 **Autonomous Research & Vision:** Ask any question, research topics, or send photos with questions for instant visual intelligence\n"
         "• 🔍 **Live Web Intelligence:** Send `search <topic>` for real-time web facts & deep research summaries\n"
         "• ⚡ **Instant Media Downloader:** Paste any YouTube, Shorts, TikTok, or Reels URL for sub-second auto-downloads with 1KB smart compression\n"
-        "• 🖼 **Image Engineering:** Send any photo with caption `compress this to 100kb` or `stretch 2x`\n\n"
+        "• 🖼 **Image Engineering:** Send photos with `compress to 100kb`, `stretch 2x`, or tap the quick compress button\n\n"
         "Commands:\n"
         "• /quota — View your current agent usage limit\n"
         "• /new or /reset — Reset agent conversation context"
@@ -183,57 +198,113 @@ async def handle_photo(message: types.Message):
         )
         return
 
-    caption = message.caption or "compress to 500kb"
-    intent = parse_image_intent(caption)
+    caption = (message.caption or "").strip()
     photo = message.photo[-1]
     
-    status_msg = await message.reply("⚡ *Executing image operation...*", parse_mode="Markdown")
+    # 1. Image Engineering Route: user explicitly asked to compress/stretch/convert
+    if is_image_edit_request(caption):
+        intent = parse_image_intent(caption)
+        status_msg = await message.reply("⚡ *Executing image operation...*", parse_mode="Markdown")
+        
+        temp_input = TEMP_DIR / f"in_{user_id}_{photo.file_id}.jpg"
+        out_base = str(TEMP_DIR / f"proc_{user_id}_{photo.file_id}")
+        files_to_clean = [temp_input]
+
+        async with TASK_SEMAPHORE:
+            try:
+                file_info = await message.bot.get_file(photo.file_id)
+                await message.bot.download_file(file_info.file_path, destination=temp_input)
+
+                result = process_image(
+                    input_path=str(temp_input),
+                    output_path=out_base,
+                    action=intent.get("action", "compress"),
+                    scale_x=intent.get("scale_x", 1.0),
+                    scale_y=intent.get("scale_y", 1.0),
+                    target_kb=intent.get("target_kb", 500),
+                    target_format=intent.get("target_format")
+                )
+                out_file = Path(result["output_path"])
+                files_to_clean.append(out_file)
+
+                reply_caption = (
+                    f"✅ **Operation Complete**\n"
+                    f"• Dimensions: `{result['orig_dimensions']}` ➔ `{result['final_dimensions']}`\n"
+                    f"• Size: `{result['orig_size_kb']} KB` ➔ `{result['final_size_kb']} KB`\n"
+                    f"• Format: `{result['format']}`"
+                )
+                await message.reply_document(
+                    document=FSInputFile(str(out_file)),
+                    caption=reply_caption,
+                    reply_markup=get_quick_action_keyboard(),
+                    parse_mode="Markdown"
+                )
+                await status_msg.delete()
+
+            except Exception as e:
+                logger.error(f"Error handling photo edit: {e}", exc_info=True)
+                await status_msg.edit_text(f"❌ Failed to process image: {str(e)}")
+            finally:
+                for f in files_to_clean:
+                    if f.exists():
+                        try:
+                            f.unlink()
+                        except Exception:
+                            pass
+        return
+
+    # 2. Multimodal Vision Route: user asked a question or sent a photo for analysis
+    user_prompt = caption if caption else "Describe and analyze this image."
+    status_msg = await message.reply("👀 *Analyzing image...*", parse_mode="Markdown")
     
     temp_input = TEMP_DIR / f"in_{user_id}_{photo.file_id}.jpg"
-    out_base = str(TEMP_DIR / f"proc_{user_id}_{photo.file_id}")
-    files_to_clean = [temp_input]
+    token = uuid.uuid4().hex[:8]
 
     async with TASK_SEMAPHORE:
         try:
             file_info = await message.bot.get_file(photo.file_id)
             await message.bot.download_file(file_info.file_path, destination=temp_input)
 
-            result = process_image(
-                input_path=str(temp_input),
-                output_path=out_base,
-                action=intent.get("action", "compress"),
-                scale_x=intent.get("scale_x", 1.0),
-                scale_y=intent.get("scale_y", 1.0),
-                target_kb=intent.get("target_kb", 500),
-                target_format=intent.get("target_format")
-            )
-            out_file = Path(result["output_path"])
-            files_to_clean.append(out_file)
+            # Store image path so user can tap "Compress" later if desired
+            store_pending_download(token, {
+                "url": None,
+                "title": "Photo",
+                "thumb_url": None,
+                "thumb_path": str(temp_input),
+                "user_id": user_id
+            })
 
-            reply_caption = (
-                f"✅ **Operation Complete**\n"
-                f"• Dimensions: `{result['orig_dimensions']}` ➔ `{result['final_dimensions']}`\n"
-                f"• Size: `{result['orig_size_kb']} KB` ➔ `{result['final_size_kb']} KB`\n"
-                f"• Format: `{result['format']}`\n\n"
-                f"*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
+            existing_session = db.get_user_session(user_id)
+            reply_text, session_id = await generate_chat_reply(
+                session_id=existing_session,
+                prompt=user_prompt,
+                image_path=str(temp_input)
             )
-            await message.reply_document(
-                document=FSInputFile(str(out_file)),
-                caption=reply_caption,
-                parse_mode="Markdown"
-            )
-            await status_msg.delete()
+            if session_id:
+                db.set_user_session(user_id, session_id)
+
+            photo_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🗜️ Compress this Photo", callback_data=f"cmp:{token}")
+                ],
+                [
+                    InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
+                    InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+                ],
+                [
+                    InlineKeyboardButton(text="📊 Quota", callback_data="act:quota"),
+                    InlineKeyboardButton(text="🔄 Reset", callback_data="act:reset")
+                ]
+            ])
+
+            try:
+                await status_msg.edit_text(reply_text, reply_markup=photo_markup, parse_mode="Markdown")
+            except Exception:
+                await status_msg.edit_text(reply_text, reply_markup=photo_markup)
 
         except Exception as e:
-            logger.error(f"Error handling photo: {e}", exc_info=True)
-            await status_msg.edit_text(f"❌ Failed to process image: {str(e)}")
-        finally:
-            for f in files_to_clean:
-                if f.exists():
-                    try:
-                        f.unlink()
-                    except Exception:
-                        pass
+            logger.error(f"Error handling photo vision: {e}", exc_info=True)
+            await status_msg.edit_text(f"❌ Failed to analyze image: {str(e)}")
 
 @dp.callback_query(F.data.startswith("dl:"))
 async def handle_download_callback(callback: CallbackQuery):
@@ -310,8 +381,7 @@ async def handle_download_callback(callback: CallbackQuery):
 
             caption = (
                 f"✅ **{title}**\n"
-                f"• Format: `{label}` | Size: `{size_mb} MB`\n"
-                f"*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
+                f"• Format: `{label}` | Size: `{size_mb} MB`"
             )
 
             if media_type == "audio":
@@ -441,8 +511,7 @@ async def handle_compress_callback(callback: types.CallbackQuery):
         caption = (
             f"🗜️ **Ultra-Compressed Thumbnail**\n"
             f"• Original: `{cmp_res['orig_kb']} KB` ➔ Compressed: `{cmp_res['compressed_kb']} KB`\n"
-            f"• Saved: `{cmp_res['saved_pct']}%` size (Clean visual clarity preserved!)\n"
-            f"*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
+            f"• Saved: `{cmp_res['saved_pct']}%` size (Clean visual clarity preserved!)"
         )
         await callback.message.reply_document(
             document=FSInputFile(cmp_res["file_path"]),
@@ -520,8 +589,7 @@ async def handle_text(message: types.Message):
                 f"🎬 **{cached['title'][:65]}**\n"
                 f"• Quality: `⚡ 1080p HD (Instant Cache 0.1s)` | Size: `{cached['size_mb']} MB`\n\n"
                 f"🤖 **SAUX Super Intelligence** — Autonomous AI Agent.\n"
-                f"Ask me any question, research topics, or search the live web!\n"
-                f"*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
+                f"Ask me any question, research topics, or search the live web!"
             )
             if cached.get("media_type") == "image":
                 await message.reply_document(
@@ -571,8 +639,7 @@ async def handle_text(message: types.Message):
                     f"🎬 **{title[:65]}**\n"
                     f"• Quality: `⚡ 1080p HD (Compressed & High Clarity)` | Size: `{size_mb} MB`\n\n"
                     f"🤖 **SAUX Super Intelligence** — Autonomous AI Agent.\n"
-                    f"Ask me any question, research topics, or search the live web!\n"
-                    f"*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
+                    f"Ask me any question, research topics, or search the live web!"
                 )
 
                 if media_type == "image":
@@ -671,7 +738,7 @@ async def handle_text(message: types.Message):
         status_msg = await message.reply("🔍 *Querying live web...*", parse_mode="Markdown")
         try:
             results = search_web(query)
-            reply_text = f"🌐 **Search Results for:** `{query}`\n\n{results}\n\n*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
+            reply_text = f"🌐 **Search Results for:** `{query}`\n\n{results}"
             try:
                 await status_msg.edit_text(reply_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
             except Exception:
@@ -714,11 +781,10 @@ async def handle_text(message: types.Message):
         if session_id:
             db.set_user_session(user_id, session_id)
         
-        reply_with_quota = f"{reply_text}\n\n*(⚡ Agent Usage Limit: `{remaining}` / `{DAILY_USER_LIMIT}` available)*"
         try:
-            await message.reply(reply_with_quota, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
+            await message.reply(reply_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
         except Exception:
-            await message.reply(reply_with_quota, reply_markup=get_quick_action_keyboard())
+            await message.reply(reply_text, reply_markup=get_quick_action_keyboard())
 
     except Exception as e:
         logger.error(f"Error calling agent engine: {e}", exc_info=True)

@@ -136,12 +136,89 @@ async def _poll_for_answer(session_id: str, prompt: str, timeout_seconds: int = 
 
     raise TimeoutError("Model took too long to complete.")
 
-async def generate_chat_reply(session_id: str | None, prompt: str) -> tuple[str, str]:
+async def generate_chat_reply(session_id: str | None, prompt: str, image_path: str | None = None) -> tuple[str, str]:
     """
     Submits prompt to inkling-2-small-free with auto-healing,
-    with seamless fallback to Gemini/Groq/Web extraction when running on cloud hosts.
+    with multimodal vision support and seamless fallback to Gemini/Groq/Web extraction.
     Returns: (reply_text, valid_session_id)
     """
+    from config import gemini_key_pool, groq_key_pool
+
+    # 1. Multimodal Vision Pipeline: processes images directly via Gemini 2.0 Flash / Groq Vision
+    if image_path and os.path.exists(image_path):
+        import base64
+        import mimetypes
+        mime, _ = mimetypes.guess_type(image_path)
+        mime = mime or "image/jpeg"
+        try:
+            with open(image_path, "rb") as f:
+                b64_data = base64.b64encode(f.read()).decode("utf-8")
+        except Exception as e:
+            logger.error(f"Failed to read image for vision: {e}")
+            b64_data = None
+
+        if b64_data:
+            gem_key = gemini_key_pool.get_key()
+            if gem_key:
+                try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gem_key}"
+                    async with httpx.AsyncClient(timeout=25.0) as client:
+                        resp = await client.post(url, json={
+                            "contents": [{
+                                "parts": [
+                                    {"text": f"{AGENTIC_SYSTEM_PROMPT}{prompt}"},
+                                    {"inline_data": {"mime_type": mime, "data": b64_data}}
+                                ]
+                            }],
+                            "generationConfig": {"maxOutputTokens": 300, "temperature": 0.2}
+                        })
+                        if resp.status_code == 200:
+                            candidates = resp.json().get("candidates", [])
+                            if candidates:
+                                text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+                                lines = [l.strip() for l in text.splitlines() if l.strip()]
+                                return "\n".join(lines[:3]), "gemini-vision"
+                except Exception as e:
+                    logger.warning(f"Gemini vision error: {e}")
+
+            groq_key = groq_key_pool.get_key()
+            if groq_key:
+                try:
+                    url = "https://api.groq.com/openai/v1/chat/completions"
+                    async with httpx.AsyncClient(timeout=25.0) as client:
+                        resp = await client.post(
+                            url,
+                            headers={"Authorization": f"Bearer {groq_key}"},
+                            json={
+                                "model": "llama-3.2-11b-vision-preview",
+                                "messages": [
+                                    {"role": "system", "content": AGENTIC_SYSTEM_PROMPT},
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "text", "text": prompt},
+                                            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64_data}"}}
+                                        ]
+                                    }
+                                ],
+                                "max_tokens": 250,
+                                "temperature": 0.2
+                            }
+                        )
+                        if resp.status_code == 200:
+                            text = resp.json()["choices"][0]["message"]["content"].strip()
+                            lines = [l.strip() for l in text.splitlines() if l.strip()]
+                            return "\n".join(lines[:3]), "groq-vision"
+                except Exception as e:
+                    logger.warning(f"Groq vision error: {e}")
+
+            return (
+                "🤖 **Image Received**\n"
+                "I see your photo! To enable multimodal visual answers, set a free Gemini or Groq API key.\n"
+                "You can also tap below to compress this photo into ~1KB ultra-compact size.",
+                "photo-ack"
+            )
+
     is_ready = await is_openchamber_ready()
     if is_ready or OPENCODE_EXE.exists():
         await ensure_opencode_service()
