@@ -136,6 +136,42 @@ async def _poll_for_answer(session_id: str, prompt: str, timeout_seconds: int = 
 
     raise TimeoutError("Model took too long to complete.")
 
+def handle_conversational_fallback(prompt: str) -> str | None:
+    """Provides natural responses for greetings, bot identity, and status when no LLM key is configured."""
+    import re
+    p = prompt.strip().lower()
+    
+    # Greetings
+    if re.search(r"^(hi+|hey+|hello+|hola+|greetings+|good\s*(morning|afternoon|evening|day|night))\b", p):
+        return (
+            "👋 **Hello! Welcome to SAUX Super Intelligence.**\n"
+            "I'm your autonomous assistant for research, web intelligence, video downloads, and image editing.\n"
+            "How can I help you today?"
+        )
+    
+    # Bot identity / capability questions
+    if any(q in p for q in ["who are you", "what bot", "what are you", "what can you do", "introduce yourself", "tell me about yourself", "your name"]):
+        return (
+            "🤖 **I am SAUX Super Intelligence — Autonomous AI Agent.**\n\n"
+            "• 🧠 **Autonomous Q&A & Research:** Ask questions, solve queries, or analyze topics\n"
+            "• 🔍 **Live Web Intelligence:** Type `search <topic>` for real-time web facts\n"
+            "• ⚡ **Instant Media Downloader:** Paste YouTube, Shorts, TikTok, or Reels links for 1080p/4K downloads\n"
+            "• 🖼 **Image Engineering & Vision:** Send photos with questions or `compress to 100kb`"
+        )
+        
+    # How are you / status
+    if any(q in p for q in ["how are you", "how are u", "how do you do", "todsy good time", "today good time"]):
+        return (
+            "⚡ **All systems operating at peak performance!**\n"
+            "Ready to assist with your research, live web searches, media downloads, and image tasks."
+        )
+
+    # Thanks / gratitude
+    if any(q in p for q in ["thanks", "thank you", "thx", "appreciate"]):
+        return "You're very welcome! Let me know whenever you need anything else. 🚀"
+
+    return None
+
 async def generate_chat_reply(session_id: str | None, prompt: str, image_path: str | None = None) -> tuple[str, str]:
     """
     Submits prompt to inkling-2-small-free with auto-healing,
@@ -285,6 +321,11 @@ async def generate_chat_reply(session_id: str | None, prompt: str, image_path: s
         except Exception as e:
             logger.warning(f"Groq cloud fallback error: {e}")
 
+    # Conversational Fallback: handles greetings, identity, and common queries
+    conv_reply = handle_conversational_fallback(prompt)
+    if conv_reply:
+        return conv_reply, "conversational-intent"
+
     # Fallback to direct context extraction if live web data was fetched
     if "<live-web-data>" in prompt:
         import re
@@ -300,4 +341,21 @@ async def generate_chat_reply(session_id: str | None, prompt: str, image_path: s
                     clean_lines.append(f"• {s[:140]}...")
             return "\n".join(clean_lines), "web-summary"
 
-    return "🤖 **SAUX Agent Online**\nSend an image with caption (compress/stretch), any video/post URL to download, or `search <query>` for live web results.", "cloud-fallback"
+    # Auto-fetch live web intelligence for queries without local/cloud keys
+    try:
+        from tools.web_tool import get_live_web_context
+        web_facts = get_live_web_context(prompt, max_results=3)
+        if web_facts:
+            lines = [l.strip() for l in web_facts.splitlines() if l.strip() and not l.startswith("<")]
+            if lines:
+                return "🔍 **Live Web Intelligence:**\n\n" + "\n".join(lines[:3]), "web-summary"
+    except Exception as e:
+        logger.debug(f"Auto-fetch web fallback error: {e}")
+
+    return (
+        "🤖 **SAUX Super Intelligence**\n"
+        "To enable deep generative AI reasoning and multimodal vision on this cloud instance, add your free Google Gemini API key to Railway:\n"
+        "`railway variables --set GEMINI_API_KEYS=\"your_gemini_key\"`\n"
+        "*(Get a free key in 30 seconds at https://aistudio.google.com/)*",
+        "key-required"
+    )
