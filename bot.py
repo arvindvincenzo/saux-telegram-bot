@@ -99,6 +99,87 @@ def parse_image_intent(caption: str) -> dict:
 MINI_APP_URL = os.getenv("MINI_APP_URL", "https://saux.si")
 DISCORD_URL = "https://discord.gg/q8RTdttSa"
 
+class LiveThinkingIndicator:
+    """
+    Displays 'Thinking... Xs' with a live count-up timer (1s to 20s).
+    Stops immediately as soon as the response arrives, hides the indicator, and renders the final message.
+    """
+    def __init__(self, message: types.Message, prefix: str = "Thinking..."):
+        self.message = message
+        self.prefix = prefix
+        self.status_msg: types.Message | None = None
+        self._stop_event = asyncio.Event()
+        self._task: asyncio.Task | None = None
+
+    async def __aenter__(self):
+        try:
+            self.status_msg = await self.message.reply(f"{self.prefix} 1s")
+        except Exception:
+            try:
+                self.status_msg = await self.message.answer(f"{self.prefix} 1s")
+            except Exception:
+                self.status_msg = None
+
+        self._task = asyncio.create_task(self._run_timer())
+        return self
+
+    async def _run_timer(self):
+        for sec in range(2, 21):
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=1.0)
+                break  # Response arrived before timer finished
+            except asyncio.TimeoutError:
+                pass
+
+            if self._stop_event.is_set():
+                break
+
+            if self.status_msg:
+                try:
+                    await self.message.bot.send_chat_action(chat_id=self.message.chat.id, action=ChatAction.TYPING)
+                except Exception:
+                    pass
+                try:
+                    await self.status_msg.edit_text(f"{self.prefix} {sec}s")
+                except Exception:
+                    pass
+
+    async def render_final(self, text: str, reply_markup=None, parse_mode: str = "Markdown"):
+        """Immediately stops the timer, hides the indicator, and renders the final response."""
+        self._stop_event.set()
+        if self._task:
+            try:
+                await self._task
+            except Exception:
+                pass
+
+        if self.status_msg:
+            try:
+                await self.status_msg.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+                return
+            except Exception:
+                try:
+                    await self.status_msg.edit_text(text, reply_markup=reply_markup)
+                    return
+                except Exception:
+                    try:
+                        await self.status_msg.delete()
+                    except Exception:
+                        pass
+
+        try:
+            await self.message.reply(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        except Exception:
+            await self.message.reply(text, reply_markup=reply_markup)
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self._stop_event.set()
+        if self._task:
+            try:
+                await self._task
+            except Exception:
+                pass
+
 def get_quick_action_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -255,56 +336,52 @@ async def handle_photo(message: types.Message):
 
     # 2. Multimodal Vision Route: user asked a question or sent a photo for analysis
     user_prompt = caption if caption else "Describe and analyze this image."
-    status_msg = await message.reply("👀 *Analyzing image...*", parse_mode="Markdown")
-    
     temp_input = TEMP_DIR / f"in_{user_id}_{photo.file_id}.jpg"
     token = uuid.uuid4().hex[:8]
 
-    async with TASK_SEMAPHORE:
-        try:
-            file_info = await message.bot.get_file(photo.file_id)
-            await message.bot.download_file(file_info.file_path, destination=temp_input)
-
-            # Store image path so user can tap "Compress" later if desired
-            store_pending_download(token, {
-                "url": None,
-                "title": "Photo",
-                "thumb_url": None,
-                "thumb_path": str(temp_input),
-                "user_id": user_id
-            })
-
-            existing_session = db.get_user_session(user_id)
-            reply_text, session_id = await generate_chat_reply(
-                session_id=existing_session,
-                prompt=user_prompt,
-                image_path=str(temp_input)
-            )
-            if session_id:
-                db.set_user_session(user_id, session_id)
-
-            photo_markup = InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="🗜️ Compress this Photo", callback_data=f"cmp:{token}")
-                ],
-                [
-                    InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
-                    InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
-                ],
-                [
-                    InlineKeyboardButton(text="📊 Quota", callback_data="act:quota"),
-                    InlineKeyboardButton(text="🔄 Reset", callback_data="act:reset")
-                ]
-            ])
-
+    async with LiveThinkingIndicator(message, prefix="Thinking...") as indicator:
+        async with TASK_SEMAPHORE:
             try:
-                await status_msg.edit_text(reply_text, reply_markup=photo_markup, parse_mode="Markdown")
-            except Exception:
-                await status_msg.edit_text(reply_text, reply_markup=photo_markup)
+                file_info = await message.bot.get_file(photo.file_id)
+                await message.bot.download_file(file_info.file_path, destination=temp_input)
 
-        except Exception as e:
-            logger.error(f"Error handling photo vision: {e}", exc_info=True)
-            await status_msg.edit_text(f"❌ Failed to analyze image: {str(e)}")
+                # Store image path so user can tap "Compress" later if desired
+                store_pending_download(token, {
+                    "url": None,
+                    "title": "Photo",
+                    "thumb_url": None,
+                    "thumb_path": str(temp_input),
+                    "user_id": user_id
+                })
+
+                existing_session = db.get_user_session(user_id)
+                reply_text, session_id = await generate_chat_reply(
+                    session_id=existing_session,
+                    prompt=user_prompt,
+                    image_path=str(temp_input)
+                )
+                if session_id:
+                    db.set_user_session(user_id, session_id)
+
+                photo_markup = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="🗜️ Compress this Photo", callback_data=f"cmp:{token}")
+                    ],
+                    [
+                        InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
+                        InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+                    ],
+                    [
+                        InlineKeyboardButton(text="📊 Quota", callback_data="act:quota"),
+                        InlineKeyboardButton(text="🔄 Reset", callback_data="act:reset")
+                    ]
+                ])
+
+                await indicator.render_final(reply_text, reply_markup=photo_markup, parse_mode="Markdown")
+
+            except Exception as e:
+                logger.error(f"Error handling photo vision: {e}", exc_info=True)
+                await indicator.render_final(f"❌ Failed to analyze image: {str(e)}")
 
 @dp.callback_query(F.data.startswith("dl:"))
 async def handle_download_callback(callback: CallbackQuery):
@@ -735,20 +812,16 @@ async def handle_text(message: types.Message):
     # 2. Live Web Search Task
     if user_prompt.lower().startswith("search "):
         query = re.sub(r"^search\s+", "", user_prompt, flags=re.IGNORECASE)
-        status_msg = await message.reply("🔍 *Querying live web...*", parse_mode="Markdown")
-        try:
-            results = search_web(query)
-            reply_text = f"🌐 **Search Results for:** `{query}`\n\n{results}"
+        async with LiveThinkingIndicator(message, prefix="Thinking...") as indicator:
             try:
-                await status_msg.edit_text(reply_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
-            except Exception:
-                await status_msg.edit_text(reply_text, reply_markup=get_quick_action_keyboard())
-        except Exception as e:
-            await status_msg.edit_text(f"❌ Search error: {str(e)}")
+                results = search_web(query)
+                reply_text = f"🌐 **Search Results for:** `{query}`\n\n{results}"
+                await indicator.render_final(reply_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
+            except Exception as e:
+                await indicator.render_final(f"❌ Search error: {str(e)}")
         return
 
     # 3. Agent Execution (Strict 1-3 lines, inkling-2-small-free)
-    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
     existing_session = db.get_user_session(user_id)
     
     # Check if query asks for factual/real-time/news information
@@ -762,36 +835,32 @@ async def handle_text(message: types.Message):
     prompt_for_agent = user_prompt
     session_to_use = existing_session
 
-    if needs_live_data:
-        live_facts = get_live_web_context(user_prompt)
-        if live_facts:
-            prompt_for_agent = (
-                f"<live-web-data>\n{live_facts}\n</live-web-data>\n\n"
-                f"Question: {user_prompt}\n"
-                "Answer factually using the verified live web data above. Max 3 lines."
-            )
-            # Fresh session avoids stale refusal baggage
-            session_to_use = None
+    async with LiveThinkingIndicator(message, prefix="Thinking...") as indicator:
+        if needs_live_data:
+            live_facts = get_live_web_context(user_prompt)
+            if live_facts:
+                prompt_for_agent = (
+                    f"<live-web-data>\n{live_facts}\n</live-web-data>\n\n"
+                    f"Question: {user_prompt}\n"
+                    "Answer factually using the verified live web data above. Max 3 lines."
+                )
+                # Fresh session avoids stale refusal baggage
+                session_to_use = None
 
-    try:
-        reply_text, session_id = await generate_chat_reply(
-            session_id=session_to_use,
-            prompt=prompt_for_agent
-        )
-        if session_id:
-            db.set_user_session(user_id, session_id)
-        
         try:
-            await message.reply(reply_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
-        except Exception:
-            await message.reply(reply_text, reply_markup=get_quick_action_keyboard())
+            reply_text, session_id = await generate_chat_reply(
+                session_id=session_to_use,
+                prompt=prompt_for_agent
+            )
+            if session_id:
+                db.set_user_session(user_id, session_id)
+            
+            await indicator.render_final(reply_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
 
-    except Exception as e:
-        logger.error(f"Error calling agent engine: {e}", exc_info=True)
-        db.clear_user_session(user_id)
-        await message.reply(
-            f"⚠️ Agent engine error: {str(e)}"
-        )
+        except Exception as e:
+            logger.error(f"Error calling agent engine: {e}", exc_info=True)
+            db.clear_user_session(user_id)
+            await indicator.render_final(f"⚠️ Agent engine error: {str(e)}")
 
 async def main():
     cleanup_temp_dir()
