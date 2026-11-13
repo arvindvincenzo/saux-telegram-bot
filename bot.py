@@ -270,7 +270,12 @@ async def handle_unknown_command(message: types.Message):
 async def handle_photo(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or ""
+    full_name = message.from_user.full_name or "Unknown"
 
+    caption = (message.caption or "").strip()
+    photo = message.photo[-1]
+    logger.info(f"📷 Photo from '{full_name}' (@{username}, id={user_id}) with caption: '{caption}'")
+    
     allowed, remaining, limit = db.check_and_consume_quota(user_id, username, DAILY_USER_LIMIT)
     if not allowed:
         await message.reply(
@@ -278,9 +283,6 @@ async def handle_photo(message: types.Message):
             parse_mode="Markdown"
         )
         return
-
-    caption = (message.caption or "").strip()
-    photo = message.photo[-1]
     
     # 1. Image Engineering Route: user explicitly asked to compress/stretch/convert
     if is_image_edit_request(caption):
@@ -613,8 +615,9 @@ async def handle_text(message: types.Message):
 
     user_id = message.from_user.id
     username = message.from_user.username or ""
-
+    full_name = message.from_user.full_name or "Unknown"
     user_prompt = message.text.strip()
+    logger.info(f"💬 Chat from '{full_name}' (@{username}, id={user_id}): '{user_prompt}'")
     detected_urls = URL_REGEX.findall(user_prompt)
 
     # 1. Instant Direct Video / Media Auto-Download Pipeline (With LLM-style CDN Media Cache)
