@@ -50,7 +50,8 @@ def get_proxy(user_id: int | None = None, attempt: int = 0) -> str | None:
         _PROXY_COUNTER = (_PROXY_COUNTER % 10) + 1
         idx = ((_PROXY_COUNTER + attempt - 1) % 10) + 1
         
-    return f"http://gyeuukdz-{idx}:kvfs9tl7lopg@p.webshare.io:80/"
+    proxy_pass = os.getenv("WEBSHARE_PASS") or os.getenv("PROXY_PASSWORD") or "kvfs9tl7lopg"
+    return f"http://gyeuukdz-{idx}:{proxy_pass}@p.webshare.io:80/"
 
 def get_cookie_file() -> str | None:
     """Finds cookies.txt or decodes from YT_COOKIES / YT_COOKIES_B64 environment variable if provided."""

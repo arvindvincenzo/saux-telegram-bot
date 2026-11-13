@@ -6,7 +6,9 @@ DB_PATH = Path(__file__).resolve().parent / "bot_users.db"
 
 def init_db():
     """Initializes the SQLite database."""
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=30000;")
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_quota (

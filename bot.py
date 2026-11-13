@@ -29,6 +29,26 @@ TASK_SEMAPHORE = asyncio.Semaphore(3)
 URL_REGEX = re.compile(r"https?://\S+")
 PENDING_DOWNLOADS = {}
 
+def store_pending_download(token: str, data: dict):
+    """Stores pending download with automatic LRU/TTL eviction to prevent memory leak."""
+    now = time.time()
+    data["created_at"] = now
+    PENDING_DOWNLOADS[token] = data
+    if len(PENDING_DOWNLOADS) > 100:
+        expired = [k for k, v in list(PENDING_DOWNLOADS.items()) if now - v.get("created_at", 0) > 1800]
+        for k in expired:
+            PENDING_DOWNLOADS.pop(k, None)
+
+def cleanup_temp_dir():
+    """Prunes orphaned temp download files older than 1 hour to prevent disk fill."""
+    try:
+        now = time.time()
+        for f in TEMP_DIR.glob("**/*"):
+            if f.is_file() and now - f.stat().st_mtime > 3600:
+                f.unlink(missing_ok=True)
+    except Exception:
+        pass
+
 def parse_image_intent(caption: str) -> dict:
     """Extracts agentic intent from natural language image captions."""
     text = caption.lower().strip()
@@ -489,13 +509,13 @@ async def handle_text(message: types.Message):
         # A. Check LLM-Style Fast Media Cache (Instant 0.1s Zero-Download Delivery)
         cached = db.get_cached_media(url)
         if cached:
-            PENDING_DOWNLOADS[token] = {
+            store_pending_download(token, {
                 "url": url,
                 "title": cached["title"],
                 "thumb_url": cached.get("thumb_url"),
                 "thumb_path": None,
                 "user_id": user_id
-            }
+            })
             caption = (
                 f"🎬 **{cached['title'][:65]}**\n"
                 f"• Quality: `⚡ 1080p HD (Instant Cache 0.1s)` | Size: `{cached['size_mb']} MB`\n\n"
@@ -539,13 +559,13 @@ async def handle_text(message: types.Message):
                 thumb_url = result.get("thumb_url")
                 media_type = result.get("media_type", "video")
 
-                PENDING_DOWNLOADS[token] = {
+                store_pending_download(token, {
                     "url": url,
                     "title": title,
                     "thumb_url": thumb_url,
                     "thumb_path": str(file_path) if media_type == "image" else None,
                     "user_id": user_id
-                }
+                })
 
                 caption = (
                     f"🎬 **{title[:65]}**\n"
@@ -708,6 +728,7 @@ async def handle_text(message: types.Message):
         )
 
 async def main():
+    cleanup_temp_dir()
     if not TELEGRAM_BOT_TOKEN or ":" not in TELEGRAM_BOT_TOKEN:
         logger.error("\n[!] TELEGRAM_BOT_TOKEN is missing or invalid in .env!\n")
         return
