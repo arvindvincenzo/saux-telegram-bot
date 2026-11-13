@@ -267,7 +267,8 @@ async def handle_download_callback(callback: CallbackQuery):
 
     async with TASK_SEMAPHORE:
         try:
-            result = download_media_custom(
+            result = await asyncio.to_thread(
+                download_media_custom,
                 url=url,
                 output_dir=user_out_dir,
                 mode=mode,
@@ -529,7 +530,7 @@ async def handle_text(message: types.Message):
 
         async with TASK_SEMAPHORE:
             try:
-                result = download_media_instant(url=url, output_dir=user_out_dir, user_id=user_id)
+                result = await asyncio.to_thread(download_media_instant, url=url, output_dir=user_out_dir, user_id=user_id)
                 file_path = Path(result["file_path"])
                 files_to_clean.append(file_path)
 
