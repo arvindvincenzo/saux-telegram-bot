@@ -26,6 +26,15 @@ def init_db():
             )
         """)
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                role TEXT,
+                content TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS media_cache (
                 url TEXT PRIMARY KEY,
                 file_id TEXT,
@@ -123,6 +132,51 @@ def clear_user_session(user_id: int) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM conversation_history WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+def add_conversation_turn(user_id: int, role: str, content: str) -> None:
+    """Stores a message in conversation history and keeps only the last 7 turns."""
+    if not content or not content.strip():
+        return
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO conversation_history (user_id, role, content) VALUES (?, ?, ?)",
+            (user_id, role, content.strip())
+        )
+        # Retain only the last 7 messages for this user
+        cursor.execute("""
+            DELETE FROM conversation_history
+            WHERE user_id = ? AND id NOT IN (
+                SELECT id FROM conversation_history
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT 7
+            )
+        """, (user_id, user_id))
+        conn.commit()
+
+def get_conversation_history(user_id: int, limit: int = 7) -> list[dict]:
+    """Retrieves the last 7 conversation messages for a user in chronological order."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT role, content FROM (
+                SELECT id, role, content FROM conversation_history
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            ) ORDER BY id ASC
+        """, (user_id, limit))
+        rows = cursor.fetchall()
+        return [{"role": r[0], "content": r[1]} for r in rows]
+
+def clear_conversation_history(user_id: int) -> None:
+    """Clears all stored conversation history for a user."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM conversation_history WHERE user_id = ?", (user_id,))
         conn.commit()
 
 def get_cached_media(url: str) -> dict | None:

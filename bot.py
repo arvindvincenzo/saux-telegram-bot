@@ -97,7 +97,38 @@ def parse_image_intent(caption: str) -> dict:
     return {"action": "compress", "target_kb": 500}
 
 MINI_APP_URL = os.getenv("MINI_APP_URL", "https://saux.si")
-DISCORD_URL = "https://discord.gg/q8RTdttSa"
+TELEGRAM_GROUP_URL = os.getenv("TELEGRAM_GROUP_URL", "https://t.me/strangerspace")
+
+def should_fetch_live_web(query: str) -> bool:
+    """Only fetches live web facts for real-time news, live data, or factual public queries."""
+    q = query.lower().strip()
+    
+    # Exclude greetings, conversational filler, personal feelings, and clarifications
+    conversational_patterns = [
+        r"^(hi+|hey+(\s+there)*|hello+|hola+|sup|yo)\b",
+        r"\b(how are you|how r u|how do you do|good (morning|afternoon|evening|night))\b",
+        r"\b(why (are you|did you|u|you) say|what do you mean|why saying that|why u saying|who asked that)\b",
+        r"\b(my mood|i am sad|i feel|feeling bad|i'm tired|cheer me up|what to do when sad|mood so bad)\b",
+        r"\b(thanks|thank you|thx|appreciate|ok|okay|cool|nice|lol|haha)\b"
+    ]
+    if any(re.search(pat, q) for pat in conversational_patterns):
+        return False
+        
+    if q.startswith("search "):
+        return True
+        
+    live_keywords = [
+        "breaking news", "trending today", "latest news", "current price", "stock price",
+        "live score", "match score", "who won", "election result", "weather today",
+        "prime minister of", "chief minister of", "current president of", "current ceo of"
+    ]
+    if any(k in q for k in live_keywords):
+        return True
+        
+    if re.search(r"\b(latest|current|today|live|trending|update on|news about)\b", q) and len(q.split()) >= 3:
+        return True
+        
+    return False
 
 class LiveThinkingIndicator:
     """
@@ -184,7 +215,7 @@ def get_quick_action_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
-            InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+            InlineKeyboardButton(text="👥 Strangerspace", url=TELEGRAM_GROUP_URL)
         ],
         [
             InlineKeyboardButton(text="📊 Quota", callback_data="act:quota"),
@@ -357,13 +388,18 @@ async def handle_photo(message: types.Message):
                 })
 
                 existing_session = db.get_user_session(user_id)
+                history = db.get_conversation_history(user_id, limit=7)
                 reply_text, session_id = await generate_chat_reply(
                     session_id=existing_session,
                     prompt=user_prompt,
-                    image_path=str(temp_input)
+                    image_path=str(temp_input),
+                    history=history
                 )
                 if session_id:
                     db.set_user_session(user_id, session_id)
+
+                db.add_conversation_turn(user_id, "user", f"[Sent photo] {user_prompt}")
+                db.add_conversation_turn(user_id, "assistant", reply_text)
 
                 photo_markup = InlineKeyboardMarkup(inline_keyboard=[
                     [
@@ -371,7 +407,7 @@ async def handle_photo(message: types.Message):
                     ],
                     [
                         InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
-                        InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+                        InlineKeyboardButton(text="👥 Strangerspace", url=TELEGRAM_GROUP_URL)
                     ],
                     [
                         InlineKeyboardButton(text="📊 Quota", callback_data="act:quota"),
@@ -400,7 +436,7 @@ async def handle_download_callback(callback: CallbackQuery):
 
     if mode == "4k":
         await callback.answer(
-            "⭐ 4K Ultra HD is an exclusive SAUX Pro feature!\n\nDefault 1080p Full HD is already delivered. Join our Discord for 4K AI upscaling access!",
+            "⭐ 4K Ultra HD is an exclusive SAUX Pro feature!\n\nDefault 1080p Full HD is already delivered. Join our Telegram group (https://t.me/strangerspace) for 4K AI upscaling access!",
             show_alert=True
         )
         return
@@ -475,7 +511,7 @@ async def handle_download_callback(callback: CallbackQuery):
                     [InlineKeyboardButton(text="🗜️ Compress into 1KB (Smart)", callback_data=f"cmp:{token}")],
                     [
                         InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
-                        InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+                        InlineKeyboardButton(text="👥 Strangerspace", url=TELEGRAM_GROUP_URL)
                     ]
                 ])
                 if token in PENDING_DOWNLOADS:
@@ -643,7 +679,7 @@ async def handle_text(message: types.Message):
             ],
             [
                 InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
-                InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+                InlineKeyboardButton(text="👥 Strangerspace", url=TELEGRAM_GROUP_URL)
             ]
         ])
 
@@ -651,7 +687,7 @@ async def handle_text(message: types.Message):
             [InlineKeyboardButton(text="🗜️ Compress into 1KB (Smart)", callback_data=f"cmp:{token}")],
             [
                 InlineKeyboardButton(text="🛍️ SAUX Crate", url=f"{MINI_APP_URL}"),
-                InlineKeyboardButton(text="👾 Join Discord", url=DISCORD_URL)
+                InlineKeyboardButton(text="👥 Strangerspace", url=TELEGRAM_GROUP_URL)
             ]
         ])
 
@@ -824,28 +860,21 @@ async def handle_text(message: types.Message):
                 await indicator.render_final(f"❌ Search error: {str(e)}")
         return
 
-    # 3. Agent Execution (Strict 1-3 lines, inkling-2-small-free)
+    # 3. Agent Execution (Strict 2-7 lines, inkling-2-small-free / cloud fallback)
     existing_session = db.get_user_session(user_id)
-    
-    # Check if query asks for factual/real-time/news information
-    query_lower = user_prompt.lower()
-    needs_live_data = any(k in query_lower for k in [
-        "who", "what", "where", "when", "how", "cm", "pm", "chief minister", "president",
-        "news", "trending", "latest", "today", "current", "update", "scandal", "price",
-        "weather", "score", "election", "minister", "ceo", "status", "?"
-    ])
+    history = db.get_conversation_history(user_id, limit=7)
 
     prompt_for_agent = user_prompt
     session_to_use = existing_session
 
     async with LiveThinkingIndicator(message, prefix="Thinking...") as indicator:
-        if needs_live_data:
+        if should_fetch_live_web(user_prompt):
             live_facts = get_live_web_context(user_prompt)
             if live_facts:
                 prompt_for_agent = (
                     f"<live-web-data>\n{live_facts}\n</live-web-data>\n\n"
                     f"Question: {user_prompt}\n"
-                    "Answer factually using the verified live web data above. Max 3 lines."
+                    "Answer factually using the verified live web data above in 2 to 5 clear lines."
                 )
                 # Fresh session avoids stale refusal baggage
                 session_to_use = None
@@ -853,11 +882,16 @@ async def handle_text(message: types.Message):
         try:
             reply_text, session_id = await generate_chat_reply(
                 session_id=session_to_use,
-                prompt=prompt_for_agent
+                prompt=prompt_for_agent,
+                history=history
             )
             if session_id:
                 db.set_user_session(user_id, session_id)
-            
+
+            # Record conversation memory (strictly keeps last 7 turns)
+            db.add_conversation_turn(user_id, "user", user_prompt)
+            db.add_conversation_turn(user_id, "assistant", reply_text)
+
             await indicator.render_final(reply_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
 
         except Exception as e:
