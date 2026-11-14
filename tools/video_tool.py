@@ -446,8 +446,25 @@ def download_media_custom(
         
     if not downloaded_file or not os.path.exists(downloaded_file):
         files = list(Path(output_dir).glob("*"))
-        if files:
-            downloaded_file = str(max(files, key=os.path.getctime))
+        file_candidates = [f for f in files if f.is_file()]
+        if file_candidates:
+            downloaded_file = str(max(file_candidates, key=os.path.getctime))
+
+    if mode == "thumbnail" and (not downloaded_file or not os.path.exists(downloaded_file)):
+        t_url = info.get("thumbnail") if info else None
+        if not t_url and info and "thumbnails" in info and info["thumbnails"]:
+            t_url = info["thumbnails"][-1].get("url")
+        if t_url:
+            fallback_thumb = os.path.join(output_dir, "thumbnail.jpg")
+            try:
+                with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+                    r = client.get(t_url)
+                    r.raise_for_status()
+                    with open(fallback_thumb, "wb") as f:
+                        f.write(r.content)
+                downloaded_file = fallback_thumb
+            except Exception as e:
+                logger.warning(f"Failed to fetch extracted thumbnail URL: {e}")
 
     if not downloaded_file or not os.path.exists(downloaded_file):
         raise FileNotFoundError("Could not locate downloaded media file.")

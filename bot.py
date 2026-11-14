@@ -465,7 +465,12 @@ async def handle_download_callback(callback: CallbackQuery):
         "post_images": "Post Photo(s)"
     }
     label = mode_labels.get(mode, mode)
-    await callback.message.edit_text(f"⚡ *Downloading {label}...*", parse_mode="Markdown")
+    await callback.answer(f"⚡ Fetching {label}...")
+    status_msg = None
+    try:
+        status_msg = await callback.message.reply(f"⚡ *Downloading {label}...*", parse_mode="Markdown")
+    except Exception:
+        pass
 
     url = data["url"]
     thumb_url = data.get("thumb_url")
@@ -531,10 +536,11 @@ async def handle_download_callback(callback: CallbackQuery):
                     parse_mode="Markdown"
                 )
 
-            try:
-                await callback.message.delete()
-            except Exception:
-                pass
+            if status_msg:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
             await callback.answer("Download complete!")
 
         except Exception as e:
@@ -558,11 +564,17 @@ async def handle_download_callback(callback: CallbackQuery):
             else:
                 user_msg = f"❌ **Failed to download {label}:**\n{clean_err[:120]}"
 
-            try:
-                await callback.message.edit_text(user_msg, disable_web_page_preview=True, parse_mode="Markdown")
-            except Exception:
+            if status_msg:
                 try:
-                    await callback.message.edit_text(user_msg, disable_web_page_preview=True)
+                    await status_msg.edit_text(user_msg, disable_web_page_preview=True, parse_mode="Markdown")
+                except Exception:
+                    try:
+                        await status_msg.edit_text(user_msg, disable_web_page_preview=True)
+                    except Exception:
+                        pass
+            else:
+                try:
+                    await callback.message.reply(user_msg, disable_web_page_preview=True, parse_mode="Markdown")
                 except Exception:
                     pass
         finally:
