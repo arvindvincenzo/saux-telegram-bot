@@ -202,12 +202,13 @@ def extract_clean_prompt(prompt: str) -> str:
     return clean.strip()
 
 def handle_conversational_fallback(prompt: str, history: list[dict] | None = None) -> str | None:
-    """Provides natural, empathetic 2-7 line responses for greetings, clarifications, mood, and identity."""
+    """Provides natural, empathetic 2-7 line responses for greetings, slang, clarifications, mood, and identity."""
     import re
     clean_p = extract_clean_prompt(prompt).lower().strip()
 
-    # 1. Greetings
-    if re.search(r"^(hi+|hey+(\s+there)*|hello+|hola+|sup|yo|greetings|good\s*(morning|afternoon|evening|day|night))\b", clean_p):
+    # 1. Greetings & Slang
+    greeting_pattern = r"^(hi+|hey+(\s+there)*|hello+|hola+|sup|yo+|wassup|wazzup|what'?s\s*up|wsp|yew+|ye+|howdy|greetings|good\s*(morning|afternoon|evening|day|night))\b"
+    if re.search(greeting_pattern, clean_p) or clean_p in ["wassup", "wazzup", "whatsup", "whats up", "what's up", "wsp", "yoo", "yooo", "yeww", "yew", "yo"]:
         return (
             "👋 **Hey there! Welcome to SAUX Super Intelligence.**\n"
             "I'm your autonomous assistant for deep research, live web facts, media downloads, and image engineering.\n"
@@ -266,11 +267,11 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
             "Let me know whenever you're ready for the next task or question. 🚀"
         )
 
-    # 7. Conversational small talk acknowledgments
-    if re.match(r"^(ok|okay|cool|nice|awesome|great|got it|understood|lol|haha)$", clean_p):
+    # 7. Conversational small talk acknowledgments & Casual Reactions
+    if re.match(r"^(ok|okay|cool|nice|awesome|great|got it|understood|lol+|haha+|lmao|sure|yep|yeah|alright|roger|bruh|bro|dude|yeww?)$", clean_p):
         return (
-            "Sounds great! 👍\n"
-            "Let me know if you'd like to research a topic, download media, or edit an image."
+            "Got it! 👍\n"
+            "Whenever you're ready, let me know if you want to research a topic, download media, or chat."
         )
 
     return None
@@ -494,11 +495,14 @@ async def generate_chat_reply(
         logger.debug(f"Knowledge fallback error: {e}")
 
     clean_q = extract_clean_prompt(prompt)
-    fallback_text = (
-        f"I have received your request: \"{clean_q[:65]}\".\n\n"
-        "🤖 **SAUX Super Intelligence**\n"
-        "• Paste any YouTube, Instagram, or TikTok link to download in 1080p HD.\n"
-        "• Send a photo to compress into ~1KB or edit.\n"
-        "• Type `search <topic>` for real-time web facts!"
-    )
+    if len(clean_q.split()) <= 6 and not any(k in clean_q.lower() for k in ["http", "www", "search", "?"]):
+        fallback_text = (
+            "👋 **Hey! I'm here and ready.**\n"
+            "Ask me any question to research, send a media link to download, or share a photo to process anytime!"
+        )
+    else:
+        fallback_text = (
+            f"💡 **Regarding \"{clean_q[:50]}\":**\n"
+            f"I'm ready to look into this with you. You can type `search {clean_q[:30]}` for real-time web facts, or ask me for more details!"
+        )
     return enforce_2_to_7_lines(fallback_text), "conversational-help"
