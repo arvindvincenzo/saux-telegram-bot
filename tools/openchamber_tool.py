@@ -199,12 +199,19 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
         )
 
     # 4. Bot identity / capability questions
-    if any(q in clean_p for q in ["who are you", "what bot", "what are you", "what can you do", "introduce yourself", "tell me about yourself", "your name"]):
+    capability_triggers = [
+        "who are you", "what bot", "what are you", "what can you do", "introduce yourself",
+        "tell me about yourself", "your name", "features", "capabilities", "what do you do",
+        "what do u do", "what can u do", "how to use", "how do you work", "things you can do",
+        "what you can do", "what u can do"
+    ]
+    if any(q in clean_p for q in capability_triggers) or re.search(r"\bwhat\b.*\b(things\b.*\bdo|can (you|u) do|do (you|u) do|features|capabilities)\b", clean_p):
         return (
             "🤖 **I am SAUX Super Intelligence — Autonomous AI Agent.**\n\n"
             "• 🧠 **Autonomous Q&A & Research:** In-depth answers, explanations, and creative assistance\n"
-            "• ⚡ **Instant Media Downloader:** 1080p downloads for YouTube, TikTok, Reels, and Shorts\n"
-            "• 🖼 **Image Engineering & Vision:** Smart image compression, resizing, and visual understanding\n\n"
+            "• ⚡ **Instant Media Downloader:** 1080p downloads for YouTube, Instagram Reels, TikTok, and Shorts\n"
+            "• 🖼 **Image Engineering & Vision:** Smart image compression, resizing, and visual understanding\n"
+            "• 🔍 **Live Web Intelligence:** Type `search <topic>` for real-time web facts\n\n"
             "Just send me a message, image, or media link anytime to get started!"
         )
 
@@ -436,9 +443,10 @@ async def generate_chat_reply(
 
     clean_q = extract_clean_prompt(prompt)
     fallback_text = (
-        f"I have received your request: *\"{clean_q[:60]}\"*.\n"
-        "To enable full generative reasoning, add your free Google Gemini API key to Railway:\n"
-        "`railway variables --set GEMINI_API_KEYS=\"your_key\"`\n"
-        "You can also send any media link to download, or send an image to edit/compress!"
+        f"I have received your request: \"{clean_q[:65]}\".\n\n"
+        "🤖 **SAUX Super Intelligence**\n"
+        "• Paste any YouTube, Instagram, or TikTok link to download in 1080p HD.\n"
+        "• Send a photo to compress into ~1KB or edit.\n"
+        "• Type `search <topic>` for real-time web facts!"
     )
-    return enforce_2_to_7_lines(fallback_text), "key-required"
+    return enforce_2_to_7_lines(fallback_text), "conversational-help"

@@ -131,6 +131,12 @@ def should_fetch_live_web(query: str) -> bool:
         
     return False
 
+def escape_md(text: str) -> str:
+    """Escapes Telegram Markdown v1 special characters in raw strings like titles."""
+    if not text:
+        return ""
+    return re.sub(r'([_*`\[\]])', r'\\\1', str(text))
+
 class LiveThinkingIndicator:
     """
     Displays 'Thinking... Xs' with a live count-up timer (1s to 20s).
@@ -500,18 +506,30 @@ async def handle_download_callback(callback: CallbackQuery):
             size_mb = result.get("size_mb", 0)
             media_type = result.get("media_type", "video")
 
+            safe_title = escape_md(title)
             caption = (
-                f"✅ **{title}**\n"
+                f"✅ **{safe_title}**\n"
                 f"• Format: `{label}` | Size: `{size_mb} MB`"
+            )
+            plain_caption = (
+                f"✅ {title}\n"
+                f"• Format: {label} | Size: {size_mb} MB"
             )
 
             if media_type == "audio":
-                await callback.message.reply_audio(
-                    audio=FSInputFile(str(file_path)),
-                    caption=caption,
-                    title=title,
-                    parse_mode="Markdown"
-                )
+                try:
+                    await callback.message.reply_audio(
+                        audio=FSInputFile(str(file_path)),
+                        caption=caption,
+                        title=title,
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    await callback.message.reply_audio(
+                        audio=FSInputFile(str(file_path)),
+                        caption=plain_caption,
+                        title=title
+                    )
             elif media_type == "image":
                 cmp_markup = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🗜️ Compress into 1KB (Smart)", callback_data=f"cmp:{token}")],
@@ -523,18 +541,31 @@ async def handle_download_callback(callback: CallbackQuery):
                 if token in PENDING_DOWNLOADS:
                     PENDING_DOWNLOADS[token]["thumb_path"] = str(file_path)
 
-                await callback.message.reply_document(
-                    document=FSInputFile(str(file_path)),
-                    caption=caption,
-                    reply_markup=cmp_markup,
-                    parse_mode="Markdown"
-                )
+                try:
+                    await callback.message.reply_document(
+                        document=FSInputFile(str(file_path)),
+                        caption=caption,
+                        reply_markup=cmp_markup,
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    await callback.message.reply_document(
+                        document=FSInputFile(str(file_path)),
+                        caption=plain_caption,
+                        reply_markup=cmp_markup
+                    )
             else:
-                await callback.message.reply_video(
-                    video=FSInputFile(str(file_path)),
-                    caption=caption,
-                    parse_mode="Markdown"
-                )
+                try:
+                    await callback.message.reply_video(
+                        video=FSInputFile(str(file_path)),
+                        caption=caption,
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    await callback.message.reply_video(
+                        video=FSInputFile(str(file_path)),
+                        caption=plain_caption
+                    )
 
             if status_msg:
                 try:
@@ -545,6 +576,7 @@ async def handle_download_callback(callback: CallbackQuery):
 
         except Exception as e:
             logger.error(f"Error in custom download: {e}", exc_info=True)
+            db.refund_quota(user_id)
             # CRITICAL: Clean error message. NEVER include raw yt-dlp github URLs or stacktraces!
             raw_err = str(e)
             clean_err = re.sub(r'https?://\S+', '', raw_err)
@@ -714,26 +746,47 @@ async def handle_text(message: types.Message):
                 "thumb_path": None,
                 "user_id": user_id
             })
+            safe_cached_title = escape_md(cached['title'][:65])
             caption = (
-                f"🎬 **{cached['title'][:65]}**\n"
+                f"🎬 **{safe_cached_title}**\n"
                 f"• Quality: `⚡ 1080p HD (Instant Cache 0.1s)` | Size: `{cached['size_mb']} MB`\n\n"
                 f"🤖 **SAUX Super Intelligence** — Autonomous AI Agent.\n"
                 f"Ask me any question, research topics, or search the live web!"
             )
+            plain_caption = (
+                f"🎬 {cached['title'][:65]}\n"
+                f"• Quality: ⚡ 1080p HD (Instant Cache 0.1s) | Size: {cached['size_mb']} MB\n\n"
+                f"🤖 SAUX Super Intelligence — Autonomous AI Agent.\n"
+                f"Ask me any question, research topics, or search the live web!"
+            )
             if cached.get("media_type") == "image":
-                await message.reply_document(
-                    document=cached["file_id"],
-                    caption=caption,
-                    reply_markup=img_keyboard,
-                    parse_mode="Markdown"
-                )
+                try:
+                    await message.reply_document(
+                        document=cached["file_id"],
+                        caption=caption,
+                        reply_markup=img_keyboard,
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    await message.reply_document(
+                        document=cached["file_id"],
+                        caption=plain_caption,
+                        reply_markup=img_keyboard
+                    )
             else:
-                await message.reply_video(
-                    video=cached["file_id"],
-                    caption=caption,
-                    reply_markup=action_keyboard,
-                    parse_mode="Markdown"
-                )
+                try:
+                    await message.reply_video(
+                        video=cached["file_id"],
+                        caption=caption,
+                        reply_markup=action_keyboard,
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    await message.reply_video(
+                        video=cached["file_id"],
+                        caption=plain_caption,
+                        reply_markup=action_keyboard
+                    )
             return
 
         # B. Fresh Download Pipeline
@@ -764,10 +817,17 @@ async def handle_text(message: types.Message):
                     "user_id": user_id
                 })
 
+                safe_title = escape_md(title[:65])
                 caption = (
-                    f"🎬 **{title[:65]}**\n"
+                    f"🎬 **{safe_title}**\n"
                     f"• Quality: `⚡ 1080p HD (Compressed & High Clarity)` | Size: `{size_mb} MB`\n\n"
                     f"🤖 **SAUX Super Intelligence** — Autonomous AI Agent.\n"
+                    f"Ask me any question, research topics, or search the live web!"
+                )
+                plain_caption = (
+                    f"🎬 {title[:65]}\n"
+                    f"• Quality: ⚡ 1080p HD (Compressed & High Clarity) | Size: {size_mb} MB\n\n"
+                    f"🤖 SAUX Super Intelligence — Autonomous AI Agent.\n"
                     f"Ask me any question, research topics, or search the live web!"
                 )
 
@@ -780,13 +840,12 @@ async def handle_text(message: types.Message):
                             parse_mode="Markdown"
                         )
                     except Exception:
-                        sent = await message.answer_document(
+                        sent = await message.reply_document(
                             document=FSInputFile(str(file_path)),
-                            caption=caption,
-                            reply_markup=img_keyboard,
-                            parse_mode="Markdown"
+                            caption=plain_caption,
+                            reply_markup=img_keyboard
                         )
-                    if sent.document:
+                    if sent and sent.document:
                         db.set_cached_media(url, sent.document.file_id, "image", title, size_mb, thumb_url)
                 else:
                     try:
@@ -797,13 +856,12 @@ async def handle_text(message: types.Message):
                             parse_mode="Markdown"
                         )
                     except Exception:
-                        sent = await message.answer_video(
+                        sent = await message.reply_video(
                             video=FSInputFile(str(file_path)),
-                            caption=caption,
-                            reply_markup=action_keyboard,
-                            parse_mode="Markdown"
+                            caption=plain_caption,
+                            reply_markup=action_keyboard
                         )
-                    if sent.video:
+                    if sent and sent.video:
                         db.set_cached_media(url, sent.video.file_id, "video", title, size_mb, thumb_url, result.get("duration", 0))
 
                 try:
@@ -813,6 +871,7 @@ async def handle_text(message: types.Message):
 
             except Exception as e:
                 logger.error(f"Error in instant media download: {e}", exc_info=True)
+                db.refund_quota(user_id)
                 raw_err = str(e)
                 clean_err = re.sub(r'https?://\S+', '', raw_err)
                 clean_err = clean_err.replace("ERROR:", "").replace("[youtube]", "").replace("DownloadError:", "").strip()
@@ -837,7 +896,7 @@ async def handle_text(message: types.Message):
                     await status_msg.edit_text(user_msg, reply_markup=get_quick_action_keyboard(), disable_web_page_preview=True, parse_mode="Markdown")
                 except Exception:
                     try:
-                        await status_msg.edit_text(user_msg, disable_web_page_preview=True)
+                        await status_msg.edit_text(user_msg.replace("**", ""), disable_web_page_preview=True)
                     except Exception:
                         pass
             finally:
@@ -850,6 +909,16 @@ async def handle_text(message: types.Message):
                             f.unlink()
                         except Exception:
                             pass
+        return
+
+    # Free Conversational Route: greetings, help, bot identity, and capability questions do NOT consume quota!
+    from tools.openchamber_tool import handle_conversational_fallback
+    conv_check = handle_conversational_fallback(user_prompt)
+    if conv_check:
+        async with LiveThinkingIndicator(message, prefix="Thinking...") as indicator:
+            db.add_conversation_turn(user_id, "user", user_prompt)
+            db.add_conversation_turn(user_id, "assistant", conv_check)
+            await indicator.render_final(conv_check, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
         return
 
     # Quota Check for text/search/agent tasks

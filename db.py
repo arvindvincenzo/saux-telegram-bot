@@ -110,6 +110,20 @@ def get_user_stats(user_id: int, daily_limit: int) -> dict:
         remaining = max(0, daily_limit - used)
         return {"used_today": used, "remaining": remaining, "limit": daily_limit}
 
+def refund_quota(user_id: int) -> None:
+    """Refunds 1 unit of quota if a task failed to complete or deliver."""
+    today = _get_current_date()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT requests_today, last_request_date FROM user_quota WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if row and row[1] == today and row[0] > 0:
+            cursor.execute(
+                "UPDATE user_quota SET requests_today = requests_today - 1 WHERE user_id = ?",
+                (user_id,)
+            )
+            conn.commit()
+
 def get_user_session(user_id: int) -> str | None:
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
