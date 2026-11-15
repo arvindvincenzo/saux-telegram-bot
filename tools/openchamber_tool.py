@@ -286,8 +286,9 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
     ]
     has_substantive_query = any(sig in clean_p for sig in substantive_signals)
 
-    # 1. Hearing, Presence & Audio checks (Highest priority so 'can you hear me' is answered directly)
-    if re.search(r"\b(can\s+(you|u)\s+hear(\s+me)?|hear\s+me|are\s+(you|u)\s+(there|listening)|can\s+(you|u)\s+see\s+me|you\s+there|u\s+there|listen(ing)?\s+to\s+me|you\s+listening)\b", clean_p) or "can you hear me" in clean_p or "can u hear me" in clean_p or "hear me" in clean_p:
+    # 1. Hearing & Presence checks - ONLY when the message is PURELY a check, NEVER when a question is attached!
+    pure_presence = r"^(hi+|hey+|yo+)?\s*(can\s+(you|u)\s+hear\s*(me)?|are\s+(you|u)\s+(there|listening)|hear\s+me|you\s+there)[?!.]*$"
+    if not has_substantive_query and re.match(pure_presence, clean_p):
         return (
             "Yes! I hear you loud and clear. 🔊\n"
             "I'm fully active, online, and listening.\n"
@@ -674,13 +675,6 @@ async def generate_chat_reply(
     if conv_check:
         return enforce_2_to_7_lines(conv_check), "conversational-intent"
 
-    # Conversational presence, listening, or emotional check
-    personal_check = clean_q.lower().strip()
-    if any(p in personal_check for p in ["you hear", "hear me", "you there", "talk to me", "are you", "can you", "do you know me", "who am i", "my name", "love you", "miss you", "listen"]):
-        return enforce_2_to_7_lines(
-            "Yes! I'm right here with you and listening attentively. 🤖\n"
-            "I'm fully active and ready to help. What would you like to explore or work on next?"
-        ), "conversational-intent"
 
     # Autonomous Knowledge Retrieval: queries authoritative encyclopedia & live web for real answers
     try:

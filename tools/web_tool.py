@@ -30,9 +30,15 @@ def get_live_web_context(query: str, max_results: int = 3) -> str:
     if cleaned and cleaned != query:
         search_queries.append(cleaned)
 
-    # 0. High-accuracy Wikipedia summary for named entities, people, movies, and places
-    target_term = cleaned or query
-    if target_term and len(target_term) > 2 and not is_news:
+    # 0. High-accuracy Wikipedia summary for named entities, people, movies, and concepts
+    # Extract targeted inquiry if wrapped in conversational prefixes (e.g. "can you tell what is babe" -> "babe")
+    m_q = re.search(r"\b(who|what|where|when|why|how)\s+(is|are|was|were)\s+([^?.,!]+)", query, flags=re.IGNORECASE)
+    if m_q and len(m_q.group(3).strip()) > 1:
+        target_term = m_q.group(3).strip()
+    else:
+        target_term = cleaned or query
+
+    if target_term and len(target_term) > 1 and not is_news:
         try:
             wiki_headers = {"User-Agent": "SAUXBot/2.1 (contact@saux.si; https://saux.si)"}
             sr = httpx.get(
