@@ -682,30 +682,26 @@ async def generate_chat_reply(
             "I'm fully active and ready to help. What would you like to explore or work on next?"
         ), "conversational-intent"
 
-    # Only fetch live web facts if query is an explicit search or fact lookup
-    search_keywords = ["search", "find", "who is", "what is", "where is", "when did", "latest", "news", "price", "vs", "versus", "weather", "today", "history of", "score", "wikipedia"]
-    is_factual_query = any(k in personal_check for k in search_keywords)
+    # Autonomous Knowledge Retrieval: queries authoritative encyclopedia & live web for real answers
+    try:
+        from tools.web_tool import get_live_web_context
+        web_facts = get_live_web_context(clean_q, max_results=2)
+        if web_facts:
+            if web_facts.startswith("**"):
+                return enforce_2_to_7_lines(web_facts), "knowledge-summary"
+            raw_lines = [l.strip() for l in web_facts.splitlines() if l.strip() and not l.startswith("<")]
+            if raw_lines:
+                clean_lines = []
+                for l in raw_lines[:2]:
+                    clean_lines.append(l.replace("• [NEWS] ", "• "))
+                formatted_knowledge = "Here is what I found on that:\n" + "\n".join(clean_lines)
+                return enforce_2_to_7_lines(formatted_knowledge), "web-summary"
+    except Exception as e:
+        logger.debug(f"Knowledge fallback error: {e}")
 
-    if is_factual_query:
-        try:
-            from tools.web_tool import get_live_web_context
-            web_facts = get_live_web_context(clean_q, max_results=2)
-            if web_facts:
-                if web_facts.startswith("**"):
-                    return enforce_2_to_7_lines(web_facts), "knowledge-summary"
-                raw_lines = [l.strip() for l in web_facts.splitlines() if l.strip() and not l.startswith("<")]
-                if raw_lines:
-                    clean_lines = []
-                    for l in raw_lines[:2]:
-                        clean_lines.append(l.replace("• [NEWS] ", "• "))
-                    formatted_knowledge = "Here is what I found on that:\n" + "\n".join(clean_lines)
-                    return enforce_2_to_7_lines(formatted_knowledge), "web-summary"
-        except Exception as e:
-            logger.debug(f"Knowledge fallback error: {e}")
-
-    # General conversational AI response
+    # General conversational AI response when no external facts or models are available
     fallback_text = (
-        f"I'm right here and ready to help! 🚀\n"
-        f"You can ask me anything, paste a media link to download, or type `search {clean_q[:30]}` for real-time web facts."
+        f"I'm right here with you! 🤖\n"
+        f"Regarding \"{clean_q[:55]}\", let me know if you would like me to analyze this, summarize key points, or look up specific details."
     )
     return enforce_2_to_7_lines(fallback_text), "conversational-help"
