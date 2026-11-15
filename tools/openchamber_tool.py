@@ -247,6 +247,17 @@ def enforce_2_to_7_lines(text: str) -> str:
 
     return "\n".join(lines)
 
+def strip_leading_greeting(text: str) -> str:
+    """Strips conversational leading greetings (e.g. 'yoo buddy who is X' -> 'who is X')."""
+    import re
+    cleaned = re.sub(
+        r"^(hi+|hey+(\s+there)*|hello+|hola+|sup|yo+|wassup|wazzup|wsp|yew+|ye+|howdy|greetings|good\s*(morning|afternoon|evening|day|night))(\s+(buddy|bro|dude|there|bot|friend|man|babe|sis|fam))?[\s,!.-]+",
+        "",
+        text.strip(),
+        flags=re.IGNORECASE
+    ).strip()
+    return cleaned or text.strip()
+
 def extract_clean_prompt(prompt: str) -> str:
     """Extracts raw user question even if wrapped in system or web data tags."""
     import re
@@ -263,7 +274,19 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
     import re
     clean_p = extract_clean_prompt(prompt).lower().strip()
 
-    # 1. Hearing, Presence & Audio checks (Highest priority so "yoo can you hear me" is answered correctly)
+    # If the user has a substantive question or action, DO NOT intercept as a greeting!
+    substantive_signals = [
+        "who is", "who are", "who was", "who were", "who's", "whos",
+        "what is", "what are", "what was", "what were", "what's", "whats",
+        "where is", "where are", "when did", "when is", "when was",
+        "why is", "why does", "why did", "why are", "why do", "why ",
+        "how to", "how do", "how does", "how can", "how is", "how are", "how ",
+        "tell me", "explain", "describe", "write ", "create ", "make ", "code ",
+        "search ", "find ", "summarize", "help me with", "download", "show me"
+    ]
+    has_substantive_query = any(sig in clean_p for sig in substantive_signals)
+
+    # 1. Hearing, Presence & Audio checks (Highest priority so 'can you hear me' is answered directly)
     if re.search(r"\b(can\s+(you|u)\s+hear(\s+me)?|hear\s+me|are\s+(you|u)\s+(there|listening)|can\s+(you|u)\s+see\s+me|you\s+there|u\s+there|listen(ing)?\s+to\s+me|you\s+listening)\b", clean_p) or "can you hear me" in clean_p or "can u hear me" in clean_p or "hear me" in clean_p:
         return (
             "Yes! I hear you loud and clear. 🔊\n"
@@ -278,7 +301,7 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
             "You can ask me any question, research a topic, or paste a video link to download."
         )
 
-    # 3. Clarifications / Follow-up reactions (e.g. 'why u saying about that?', 'why did you say that')
+    # 3. Clarifications / Follow-up reactions
     if re.search(r"\b(why (are you|did you|u|you) say|what do you mean|why saying that|why u saying|who asked that)\b", clean_p):
         return (
             "I apologize for the confusion earlier!\n"
@@ -315,14 +338,16 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
             "Just send me a message, image, or media link anytime to get started!"
         )
 
-    # 6. Greetings & Slang
-    greeting_pattern = r"^(hi+|hey+(\s+there)*|hello+|hola+|sup|yo+|wassup|wazzup|what'?s\s*up|wsp|yew+|ye+|howdy|greetings|good\s*(morning|afternoon|evening|day|night))\b"
-    if re.search(greeting_pattern, clean_p) or clean_p in ["wassup", "wazzup", "whatsup", "whats up", "what's up", "wsp", "yoo", "yooo", "yeww", "yew", "yo"]:
-        return (
-            "👋 **Hey there! Welcome to SAUX Super Intelligence.**\n"
-            "I'm your autonomous assistant for deep research, live web facts, media downloads, and image engineering.\n"
-            "What would you like to work on today?"
-        )
+    # 6. Greetings & Slang (ONLY when the message is PURELY a greeting, never when a question is asked!)
+    if not has_substantive_query:
+        greeting_pattern = r"^(hi+|hey+(\s+there)*|hello+|hola+|sup|yo+|wassup|wazzup|what'?s\s*up|wsp|yew+|ye+|howdy|greetings|good\s*(morning|afternoon|evening|day|night))(\s+(buddy|bro|dude|there|bot|friend|man|babe|sis|fam))?[!.]*$"
+        pure_greetings = ["wassup", "wazzup", "whatsup", "whats up", "what's up", "wsp", "yoo", "yooo", "yeww", "yew", "yo", "yo buddy", "hey buddy", "hi buddy", "hello buddy", "yoo buddy"]
+        if re.match(greeting_pattern, clean_p) or clean_p in pure_greetings:
+            return (
+                "👋 **Hey there! Welcome to SAUX Super Intelligence.**\n"
+                "I'm your autonomous assistant for deep research, live web facts, media downloads, and image engineering.\n"
+                "What would you like to work on today?"
+            )
 
     # 7. Status / How are you / What happened
     status_triggers = [
@@ -412,6 +437,9 @@ async def generate_chat_reply(
         conv_quick = handle_conversational_fallback(prompt, history)
         if conv_quick:
             return enforce_2_to_7_lines(conv_quick), "conversational-intent"
+
+    # Strip conversational leading greetings so the AI receives the pure question (e.g. "yoo buddy who is X" -> "who is X")
+    prompt = strip_leading_greeting(prompt)
 
     # Instant Live Web Context Synthesis (if live web facts are already in prompt, deliver in 0.001s)
     if "<live-web-data>" in prompt:
@@ -525,11 +553,11 @@ async def generate_chat_reply(
         try:
             if not target_sid:
                 target_sid = await create_fresh_session()
-            reply = await _poll_for_answer(target_sid, prompt, timeout_seconds=2.0)
+            reply = await _poll_for_answer(target_sid, prompt, timeout_seconds=6.0)
             return enforce_2_to_7_lines(reply), target_sid
         except Exception as e:
-            logger.warning(f"Local OpenCode failed ({e}). Backing off for 300s...")
-            _opencode_backoff_until = now + 300.0
+            logger.warning(f"Local OpenCode failed ({e}). Backing off for 15s...")
+            _opencode_backoff_until = now + 15.0
 
     # 1. High-Throughput Distributed Groq Engine (Dynamic 8B/70B + Multi-Key Auto-Failover)
     from config import gemini_key_pool, groq_key_pool
@@ -663,6 +691,8 @@ async def generate_chat_reply(
             from tools.web_tool import get_live_web_context
             web_facts = get_live_web_context(clean_q, max_results=2)
             if web_facts:
+                if web_facts.startswith("**"):
+                    return enforce_2_to_7_lines(web_facts), "knowledge-summary"
                 raw_lines = [l.strip() for l in web_facts.splitlines() if l.strip() and not l.startswith("<")]
                 if raw_lines:
                     clean_lines = []

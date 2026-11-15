@@ -26,9 +26,38 @@ def get_live_web_context(query: str, max_results: int = 3) -> str:
     # Refine search query for leadership / official roles
     search_queries = [query]
     
-    cleaned = re.sub(r"^(who is|who are|what is|what about|tell me about|how is|which is)\s+", "", query, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"^(who is|who are|who was|what is|what are|what about|tell me about|how is|which is|search for|search)\s+", "", query, flags=re.IGNORECASE).strip()
     if cleaned and cleaned != query:
         search_queries.append(cleaned)
+
+    # 0. High-accuracy Wikipedia summary for named entities, people, movies, and places
+    target_term = cleaned or query
+    if target_term and len(target_term) > 2 and not is_news:
+        try:
+            wiki_headers = {"User-Agent": "SAUXBot/2.1 (contact@saux.si; https://saux.si)"}
+            sr = httpx.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={"action": "query", "list": "search", "srsearch": target_term, "format": "json", "srlimit": 1},
+                headers=wiki_headers,
+                timeout=2.5
+            )
+            if sr.status_code == 200:
+                s_data = sr.json().get("query", {}).get("search", [])
+                if s_data:
+                    best_title = s_data[0].get("title", "")
+                    if best_title:
+                        sum_r = httpx.get(
+                            f"https://en.wikipedia.org/api/rest_v1/page/summary/{best_title.replace(' ', '_')}",
+                            headers=wiki_headers,
+                            timeout=2.5
+                        )
+                        if sum_r.status_code == 200:
+                            page_summary = sum_r.json()
+                            extract = page_summary.get("extract", "").strip()
+                            if extract and len(extract) > 40:
+                                return f"**{page_summary.get('title', best_title)}**\n{extract}"
+        except Exception as e:
+            logger.debug(f"Wikipedia summary lookup note: {e}")
 
     # Check for political/role queries (e.g. CM, PM, President)
     if any(k in query.lower() for k in ["cm", "chief minister", "pm", "prime minister", "president", "ceo"]):
