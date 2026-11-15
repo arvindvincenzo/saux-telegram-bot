@@ -1116,7 +1116,7 @@ async def handle_text(message: types.Message):
                 prompt=prompt_for_agent,
                 history=history
             )
-            if session_id in ("conversational-help", "key-required") or reply_text.startswith("I have received your request:"):
+            if session_id in ("conversational-help", "key-required", "conversational-intent") or reply_text.startswith("I'm here to assist with"):
                 db.refund_quota(user_id)
             elif session_id:
                 db.set_user_session(user_id, session_id)

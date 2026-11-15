@@ -114,14 +114,18 @@ async def create_fresh_session() -> str:
             pass
         return new_id
 
-async def _poll_for_answer(session_id: str, prompt: str, timeout_seconds: int = 20) -> str:
-    """Submits prompt and polls for completed assistant response."""
+async def _poll_for_answer(session_id: str, prompt: str, timeout_seconds: int = 15) -> str:
+    """Submits prompt and polls for completed assistant response from OpenCode."""
     full_prompt = f"{AGENTIC_SYSTEM_PROMPT}{prompt.strip()}"
-    async with httpx.AsyncClient(timeout=25.0) as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         # 1. Fetch current message IDs
         try:
             r = await client.get(f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{session_id}/message", auth=OPENCODE_AUTH)
-            prev_ids = {m.get("id") for m in r.json().get("data", [])} if r.status_code == 200 else set()
+            data_val = r.json().get("data", []) if r.status_code == 200 else []
+            if isinstance(data_val, list):
+                prev_ids = {m.get("id") for m in data_val if isinstance(m, dict) and m.get("id")}
+            else:
+                prev_ids = set()
         except Exception:
             prev_ids = set()
 
@@ -134,7 +138,6 @@ async def _poll_for_answer(session_id: str, prompt: str, timeout_seconds: int = 
             headers={"Content-Type": "application/json"}
         )
         if p_resp.status_code == 400:
-            # Fallback for older OpenCode schemas
             p_resp = await client.post(
                 f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{session_id}/prompt",
                 auth=OPENCODE_AUTH,
@@ -146,29 +149,82 @@ async def _poll_for_answer(session_id: str, prompt: str, timeout_seconds: int = 
 
         # 3. Poll for reply
         start_time = asyncio.get_event_loop().time()
+        last_extracted_text = ""
+        stable_count = 0
+
         while asyncio.get_event_loop().time() - start_time < timeout_seconds:
             await asyncio.sleep(0.5)
-            msg_resp = await client.get(
-                f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{session_id}/message",
-                auth=OPENCODE_AUTH
-            )
+            try:
+                msg_resp = await client.get(
+                    f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{session_id}/message",
+                    auth=OPENCODE_AUTH
+                )
+            except Exception:
+                continue
+
             if msg_resp.status_code != 200:
                 continue
 
-            all_msgs = msg_resp.json().get("data", [])
-            new_msgs = [m for m in all_msgs if m.get("id") not in prev_ids]
-            
-            idle_completed = any(m.get("type") == "idle" for m in new_msgs)
-            
-            for m in reversed(new_msgs):
-                if m.get("type") == "assistant":
-                    content = m.get("content", [])
-                    texts = [c.get("text", "") for c in content if c.get("type") == "text" and c.get("text", "").strip()]
-                    if texts and (idle_completed or m.get("finish") == "stop"):
-                        raw_reply = "\n".join(texts).strip()
-                        return enforce_2_to_7_lines(raw_reply)
+            resp_json = msg_resp.json()
+            all_msgs = resp_json.get("data", []) if isinstance(resp_json, dict) else resp_json
+            if not isinstance(all_msgs, list):
+                continue
 
-    raise TimeoutError("Model took too long to complete.")
+            new_msgs = [m for m in all_msgs if isinstance(m, dict) and m.get("id") not in prev_ids]
+
+            for m in reversed(new_msgs):
+                # Check if this message is from assistant/model
+                role = (m.get("role") or m.get("type") or m.get("sender") or "").lower()
+                if isinstance(m.get("data"), dict):
+                    role = role or m["data"].get("role", "").lower()
+
+                if role in ("assistant", "model", "bot") or ("prompt" not in m and "user" not in role):
+                    texts = []
+                    # Check 'parts' array (OpenCode standard)
+                    for p in (m.get("parts") or []):
+                        if isinstance(p, dict) and p.get("text"):
+                            texts.append(p["text"])
+                        elif isinstance(p, str):
+                            texts.append(p)
+
+                    # Check 'content'
+                    content = m.get("content")
+                    if isinstance(content, list):
+                        for c in content:
+                            if isinstance(c, dict) and c.get("text"):
+                                texts.append(c["text"])
+                            elif isinstance(c, str):
+                                texts.append(c)
+                    elif isinstance(content, str) and content.strip():
+                        texts.append(content)
+
+                    # Check direct 'text' field
+                    if m.get("text") and isinstance(m["text"], str):
+                        texts.append(m["text"])
+
+                    current_text = "\n".join(texts).strip()
+                    if current_text:
+                        # Check stop condition
+                        finish = (m.get("finish") or m.get("finishReason") or m.get("status") or "").lower()
+                        is_finished = finish in ("stop", "end_turn", "completed", "done", "success") or m.get("completed") is True
+                        
+                        if is_finished:
+                            return enforce_2_to_7_lines(current_text)
+                        
+                        # If text has stayed stable across 2 polling cycles (1.0s) and is substantial
+                        if current_text == last_extracted_text and len(current_text) > 20:
+                            stable_count += 1
+                            if stable_count >= 2:
+                                return enforce_2_to_7_lines(current_text)
+                        else:
+                            last_extracted_text = current_text
+                            stable_count = 0
+
+        # If loop timed out but we captured real text from assistant, return it directly!
+        if last_extracted_text and len(last_extracted_text) > 10:
+            return enforce_2_to_7_lines(last_extracted_text)
+
+        raise TimeoutError("Model took too long to complete.")
 
 def enforce_2_to_7_lines(text: str) -> str:
     """Enforces that the reply is strictly between 2 and 7 lines, with clean readability."""
@@ -252,12 +308,17 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
             "Just send me a message, image, or media link anytime to get started!"
         )
 
-    # 5. Status / How are you
-    if any(q in clean_p for q in ["how are you", "how are u", "how do you do", "todsy good time", "today good time"]):
+    # 5. Status / How are you / What happened
+    status_triggers = [
+        "how are you", "how are u", "how do you do", "how r u", "todsy good time", "today good time",
+        "what happen to you", "what happened to you", "what happen", "what happened",
+        "whats wrong", "what's wrong", "what is wrong", "are you ok", "are you okay", "you ok"
+    ]
+    if any(q in clean_p for q in status_triggers) or re.search(r"\b(what('?s|\s+is|\s+has)?\s*(happen(ed)?|wrong|up)\s*(to|with)?\s*(u|you)|are\s+you\s+ok(ay)?|you\s+alive)\b", clean_p):
         return (
             "⚡ **All systems operating at peak performance!**\n"
-            "Ready to assist with your research, live web searches, media downloads, and image tasks.\n"
-            "How is your day treating you so far?"
+            "I'm fully online, responsive, and ready for your requests.\n"
+            "Whether you need in-depth research, live web facts, media downloads, or image tools, what would you like to work on?"
         )
 
     # 6. Thanks / gratitude
@@ -273,6 +334,48 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
             "Got it! 👍\n"
             "Whenever you're ready, let me know if you want to research a topic, download media, or chat."
         )
+
+    return None
+
+async def query_zero_cost_llm(prompt: str, history: list[dict] | None = None) -> str | None:
+    """Queries zero-cost public LLM backends with rotation for reliable real-time agentic answers."""
+    clean_p = extract_clean_prompt(prompt)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are SAUX Super Intelligence — an autonomous, highly capable AI Assistant. "
+                "Tone: direct, empathetic, engaging, and exceptionally clear. "
+                "Strict length: strictly between 2 and 6 lines. Never output just one sentence, and never exceed 6 lines. "
+                "Never say you are an AI model or mention third-party platforms."
+            )
+        }
+    ]
+    if history:
+        for h in history[-4:]:
+            r = "user" if h.get("role") == "user" else "assistant"
+            c = h.get("content", "").strip()
+            if c:
+                messages.append({"role": r, "content": c[:200]})
+    messages.append({"role": "user", "content": clean_p})
+
+    for m in ["openai", "mistral", "deepseek", "qwen-coder"]:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.post(
+                    "https://text.pollinations.ai/",
+                    headers={
+                        "User-Agent": "SAUX-Super-Intelligence/2.0",
+                        "Content-Type": "application/json"
+                    },
+                    json={"messages": messages, "model": m}
+                )
+                if resp.status_code == 200 and resp.text.strip():
+                    txt = resp.text.strip()
+                    if not txt.startswith("Free limit reached") and len(txt) > 10:
+                        return enforce_2_to_7_lines(txt)
+        except Exception as e:
+            logger.debug(f"Zero-cost model {m} attempt error: {e}")
 
     return None
 
@@ -455,6 +558,14 @@ async def generate_chat_reply(
     if conv_reply:
         return enforce_2_to_7_lines(conv_reply), "conversational-intent"
 
+    # Zero-Cost LLM Fallback (Provides real agentic answers without keys)
+    try:
+        zero_cost_reply = await query_zero_cost_llm(prompt, history)
+        if zero_cost_reply:
+            return enforce_2_to_7_lines(zero_cost_reply), "zero-cost-ai"
+    except Exception as e:
+        logger.debug(f"Zero-cost fallback error: {e}")
+
     # Synthesized Context Extraction for explicit live web queries
     if "<live-web-data>" in prompt:
         import re
@@ -495,14 +606,8 @@ async def generate_chat_reply(
         logger.debug(f"Knowledge fallback error: {e}")
 
     clean_q = extract_clean_prompt(prompt)
-    if len(clean_q.split()) <= 6 and not any(k in clean_q.lower() for k in ["http", "www", "search", "?"]):
-        fallback_text = (
-            "👋 **Hey! I'm here and ready.**\n"
-            "Ask me any question to research, send a media link to download, or share a photo to process anytime!"
-        )
-    else:
-        fallback_text = (
-            f"💡 **Regarding \"{clean_q[:50]}\":**\n"
-            f"I'm ready to look into this with you. You can type `search {clean_q[:30]}` for real-time web facts, or ask me for more details!"
-        )
+    fallback_text = (
+        f"I'm here to assist with \"{clean_q[:55]}\".\n"
+        "Let me know if you would like me to research this in-depth, summarize key facts, or break down the steps!"
+    )
     return enforce_2_to_7_lines(fallback_text), "conversational-help"
