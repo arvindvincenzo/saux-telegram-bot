@@ -12,6 +12,7 @@ logger = logging.getLogger("openchamber_tool")
 OPENCODE_PORT = 57123
 OPENCODE_AUTH = ("opencode", "sauxagent2026")
 PRIMARY_MODEL = "inkling-2-small-free"
+_opencode_backoff_until = 0.0
 
 def find_opencode_bin() -> Path | None:
     """Locates OpenCode CLI binary on Linux (Railway) or Windows (local)."""
@@ -81,7 +82,7 @@ async def ensure_opencode_service():
 async def is_openchamber_ready() -> bool:
     """Checks if OpenCode server is healthy and responding on port 57123."""
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=0.4) as client:
             resp = await client.get(f"http://127.0.0.1:{OPENCODE_PORT}/api/session", auth=OPENCODE_AUTH)
             return resp.status_code == 200
     except Exception:
@@ -90,7 +91,7 @@ async def is_openchamber_ready() -> bool:
 async def create_fresh_session() -> str:
     """Creates a brand new OpenCode session pinned to inkling-2-small-free."""
     await ensure_opencode_service()
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=2.0) as client:
         resp = await client.post(
             f"http://127.0.0.1:{OPENCODE_PORT}/api/session",
             auth=OPENCODE_AUTH,
@@ -114,10 +115,10 @@ async def create_fresh_session() -> str:
             pass
         return new_id
 
-async def _poll_for_answer(session_id: str, prompt: str, timeout_seconds: int = 15) -> str:
+async def _poll_for_answer(session_id: str, prompt: str, timeout_seconds: float = 2.5) -> str:
     """Submits prompt and polls for completed assistant response from OpenCode."""
     full_prompt = f"{AGENTIC_SYSTEM_PROMPT}{prompt.strip()}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with httpx.AsyncClient(timeout=4.0) as client:
         # 1. Fetch current message IDs
         try:
             r = await client.get(f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{session_id}/message", auth=OPENCODE_AUTH)
@@ -338,7 +339,7 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
     return None
 
 async def query_zero_cost_llm(prompt: str, history: list[dict] | None = None) -> str | None:
-    """Queries zero-cost public LLM backends with rotation for reliable real-time agentic answers."""
+    """Queries zero-cost public LLM backends with ultra-fast timeout (<=2s)."""
     clean_p = extract_clean_prompt(prompt)
     messages = [
         {
@@ -352,30 +353,29 @@ async def query_zero_cost_llm(prompt: str, history: list[dict] | None = None) ->
         }
     ]
     if history:
-        for h in history[-4:]:
+        for h in history[-3:]:
             r = "user" if h.get("role") == "user" else "assistant"
             c = h.get("content", "").strip()
             if c:
                 messages.append({"role": r, "content": c[:200]})
     messages.append({"role": "user", "content": clean_p})
 
-    for m in ["openai", "mistral", "deepseek", "qwen-coder"]:
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.post(
-                    "https://text.pollinations.ai/",
-                    headers={
-                        "User-Agent": "SAUX-Super-Intelligence/2.0",
-                        "Content-Type": "application/json"
-                    },
-                    json={"messages": messages, "model": m}
-                )
-                if resp.status_code == 200 and resp.text.strip():
-                    txt = resp.text.strip()
-                    if not txt.startswith("Free limit reached") and len(txt) > 10:
-                        return enforce_2_to_7_lines(txt)
-        except Exception as e:
-            logger.debug(f"Zero-cost model {m} attempt error: {e}")
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.post(
+                "https://text.pollinations.ai/",
+                headers={
+                    "User-Agent": "SAUX-Super-Intelligence/2.0",
+                    "Content-Type": "application/json"
+                },
+                json={"messages": messages, "model": "openai-fast"}
+            )
+            if resp.status_code == 200 and resp.text.strip():
+                txt = resp.text.strip()
+                if not txt.startswith("Free limit reached") and len(txt) > 10:
+                    return enforce_2_to_7_lines(txt)
+    except Exception as e:
+        logger.debug(f"Zero-cost model attempt error: {e}")
 
     return None
 
@@ -397,6 +397,29 @@ async def generate_chat_reply(
         conv_quick = handle_conversational_fallback(prompt, history)
         if conv_quick:
             return enforce_2_to_7_lines(conv_quick), "conversational-intent"
+
+    # Instant Live Web Context Synthesis (if live web facts are already in prompt, deliver in 0.001s)
+    if "<live-web-data>" in prompt:
+        import re
+        snippets = re.findall(r"•\s*\[NEWS\]\s*([^:\n]+):\s*([^\n]+)", prompt)
+        if not snippets:
+            snippets = re.findall(r"•\s*([^:\n]+):\s*([^\n]+)", prompt)
+        if not snippets:
+            raw_bullets = re.findall(r"•\s*([^\n]+)", prompt)
+            snippets = [(b, "") for b in raw_bullets]
+
+        clean_lines = []
+        for s in snippets[:3]:
+            title = s[0].strip()
+            body = s[1].strip() if len(s) > 1 else ""
+            body = re.sub(r"^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s*[·\-–]\s*", "", body)
+            body = re.sub(r"\.{2,}$", "", body).strip()
+            if body:
+                clean_lines.append(f"• **{title}**: {body[:140]}.")
+            else:
+                clean_lines.append(f"• **{title}**")
+        if clean_lines:
+            return enforce_2_to_7_lines("\n".join(clean_lines)), "web-summary"
 
     # 1. Multimodal Vision Pipeline: processes images directly via Gemini 2.0 Flash / Groq Vision
     if image_path and os.path.exists(image_path):
@@ -480,25 +503,18 @@ async def generate_chat_reply(
                 "You can also tap below to compress this photo into ~1KB ultra-compact size."
             ), "photo-ack"
 
-    is_ready = await is_openchamber_ready()
-    if is_ready or OPENCODE_EXE.exists():
-        await ensure_opencode_service()
-
-        # Step 1: Try existing session if available
-        if session_id and session_id != "cloud-fallback":
-            try:
-                reply = await _poll_for_answer(session_id, prompt, timeout_seconds=15)
-                return enforce_2_to_7_lines(reply), session_id
-            except Exception as e:
-                logger.warning(f"Session {session_id} stalled ({e}). Auto-healing with fresh session...")
-
-        # Step 2: Auto-heal with brand new session
+    global _opencode_backoff_until
+    now = asyncio.get_event_loop().time()
+    if now >= _opencode_backoff_until and await is_openchamber_ready():
+        target_sid = session_id if (session_id and session_id != "cloud-fallback") else None
         try:
-            fresh_session_id = await create_fresh_session()
-            reply = await _poll_for_answer(fresh_session_id, prompt, timeout_seconds=20)
-            return enforce_2_to_7_lines(reply), fresh_session_id
+            if not target_sid:
+                target_sid = await create_fresh_session()
+            reply = await _poll_for_answer(target_sid, prompt, timeout_seconds=2.0)
+            return enforce_2_to_7_lines(reply), target_sid
         except Exception as e:
-            logger.warning(f"Local OpenCode failed ({e}). Proceeding to cloud fallback...")
+            logger.warning(f"Local OpenCode failed ({e}). Backing off for 300s...")
+            _opencode_backoff_until = now + 300.0
 
     # Cloud / Headless Fallback:
     from config import gemini_key_pool, groq_key_pool
@@ -512,7 +528,7 @@ async def generate_chat_reply(
                     role = "user" if h.get("role") == "user" else "model"
                     contents.append({"role": role, "parts": [{"text": h.get("content", "")}]})
             contents.append({"role": "user", "parts": [{"text": f"{AGENTIC_SYSTEM_PROMPT}{prompt}"}]})
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.post(url, json={
                     "contents": contents,
                     "generationConfig": {"maxOutputTokens": 300, "temperature": 0.3}
@@ -536,7 +552,7 @@ async def generate_chat_reply(
                     role = "user" if h.get("role") == "user" else "assistant"
                     messages.append({"role": role, "content": h.get("content", "")})
             messages.append({"role": "user", "content": prompt})
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.post(
                     url,
                     headers={"Authorization": f"Bearer {groq_key}"},
@@ -560,7 +576,7 @@ async def generate_chat_reply(
 
     # Zero-Cost LLM Fallback (Provides real agentic answers without keys)
     try:
-        zero_cost_reply = await query_zero_cost_llm(prompt, history)
+        zero_cost_reply = await asyncio.wait_for(query_zero_cost_llm(prompt, history), timeout=1.0)
         if zero_cost_reply:
             return enforce_2_to_7_lines(zero_cost_reply), "zero-cost-ai"
     except Exception as e:
@@ -593,15 +609,14 @@ async def generate_chat_reply(
     try:
         from tools.web_tool import get_live_web_context
         clean_q = extract_clean_prompt(prompt)
-        web_facts = get_live_web_context(clean_q, max_results=3)
+        web_facts = get_live_web_context(clean_q, max_results=2)
         if web_facts:
             raw_lines = [l.strip() for l in web_facts.splitlines() if l.strip() and not l.startswith("<")]
             if raw_lines:
                 clean_lines = []
                 for l in raw_lines[:3]:
                     clean_lines.append(l.replace("• [NEWS] ", "• "))
-                summary_text = "💡 **Autonomous Intelligence:**\n\n" + "\n".join(clean_lines)
-                return enforce_2_to_7_lines(summary_text), "web-summary"
+                return enforce_2_to_7_lines("\n".join(clean_lines)), "web-summary"
     except Exception as e:
         logger.debug(f"Knowledge fallback error: {e}")
 

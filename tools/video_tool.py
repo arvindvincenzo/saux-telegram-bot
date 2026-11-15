@@ -1,4 +1,6 @@
 import os
+import shutil
+import subprocess
 import glob
 import re
 import io
@@ -121,6 +123,81 @@ def clean_media_url(url: str) -> str:
             
     return url
 
+def check_video_has_audio(file_path: str) -> bool:
+    """Checks if the video container contains at least one active audio stream."""
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        return bool(res.stdout.strip())
+    except Exception as e:
+        logger.debug(f"ffprobe audio check warning: {e}")
+        return True
+
+def mux_audio_fallback(url: str, video_path: str, cookie_file: str | None = None, proxy: str | None = None) -> str | None:
+    """Downloads matching audio track and remuxes into a single playable MP4 with audio."""
+    try:
+        audio_path = video_path + ".audio.m4a"
+        merged_path = video_path + ".fixed.mp4"
+        ydl_audio_opts = {
+            "outtmpl": audio_path,
+            "format": "bestaudio/best[acodec!=none]",
+            "quiet": True,
+            "no_warnings": True,
+            "socket_timeout": 15,
+            "retries": 2,
+        }
+        if cookie_file:
+            ydl_audio_opts["cookiefile"] = cookie_file
+        if proxy:
+            ydl_audio_opts["proxy"] = proxy
+
+        ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+        if ffmpeg_bin and os.path.exists(ffmpeg_bin):
+            ydl_audio_opts["ffmpeg_location"] = ffmpeg_bin
+
+        with yt_dlp.YoutubeDL(ydl_audio_opts) as ydl:
+            ydl.download([url])
+
+        found_audio = None
+        for p in [audio_path, audio_path + ".m4a", audio_path + ".mp3", audio_path + ".webm"]:
+            if os.path.exists(p):
+                found_audio = p
+                break
+
+        if found_audio:
+            cmd = [
+                ffmpeg_bin if ffmpeg_bin and os.path.exists(ffmpeg_bin) else "ffmpeg",
+                "-y",
+                "-i", video_path,
+                "-i", found_audio,
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest",
+                merged_path
+            ]
+            subprocess.run(cmd, capture_output=True, timeout=15)
+            try:
+                os.remove(found_audio)
+            except Exception:
+                pass
+            if os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
+                try:
+                    os.remove(video_path)
+                except Exception:
+                    pass
+                return merged_path
+    except Exception as e:
+        logger.warning(f"Audio mux fallback failed: {e}")
+    return None
+
 def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48, user_id: int | None = None) -> dict:
     """
     Direct high-performance media downloader.
@@ -143,6 +220,7 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48,
     title = "Media"
     last_err = None
 
+    ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
     for conn_proxy in connection_attempts:
         ydl_opts = {
             "outtmpl": out_template,
@@ -150,13 +228,15 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48,
             "no_warnings": True,
             "noplaylist": True,
             "max_filesize": max_filesize_mb * 1024 * 1024,
-            "format": "bestvideo+bestaudio/best",
+            "format": "best[ext=mp4][acodec!=none]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[acodec!=none]/best",
             "merge_output_format": "mp4",
             "http_headers": YTDLP_HTTP_HEADERS,
             "js_runtimes": {"node": {}, "deno": {}},
             "socket_timeout": 30,
             "retries": 3,
         }
+        if ffmpeg_bin and os.path.exists(ffmpeg_bin):
+            ydl_opts["ffmpeg_location"] = ffmpeg_bin
         if cookie_file:
             ydl_opts["cookiefile"] = cookie_file
         if conn_proxy:
@@ -193,6 +273,12 @@ def download_media_instant(url: str, output_dir: str, max_filesize_mb: int = 48,
     duration = info.get("duration", 0) if info else 0
 
     is_image = downloaded_file.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+    if not is_image and not check_video_has_audio(downloaded_file):
+        logger.warning(f"Video {downloaded_file} has no audio track. Invoking automatic audio stream muxer...")
+        fixed = mux_audio_fallback(url, downloaded_file, cookie_file, proxy=None)
+        if fixed and os.path.exists(fixed):
+            downloaded_file = fixed
+            size_mb = round(os.path.getsize(downloaded_file) / (1024 * 1024), 2)
 
     return {
         "file_path": downloaded_file,
@@ -417,8 +503,11 @@ def download_media_custom(
         # Video resolution mode (4k, 1080p, 720p, 480p, 360p)
         height_map = {"4k": 2160, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
         h = height_map.get(mode, 720)
+        ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+        if ffmpeg_bin and os.path.exists(ffmpeg_bin):
+            ydl_opts["ffmpeg_location"] = ffmpeg_bin
         ydl_opts.update({
-            "format": f"bestvideo[height<={h}]+bestaudio/bestvideo+bestaudio/best",
+            "format": f"best[ext=mp4][height<={h}][acodec!=none]/bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={h}]+bestaudio/best[acodec!=none]/best",
             "merge_output_format": "mp4",
         })
         media_type = "video"
@@ -432,7 +521,7 @@ def download_media_custom(
                 title = info.get("title", "Media")
     except Exception as primary_err:
         logger.warning(f"Primary format download failed: {primary_err}. Retrying with universal direct format...")
-        ydl_opts["format"] = "best[ext=mp4]/best"
+        ydl_opts["format"] = "best[ext=mp4][acodec!=none]/best[acodec!=none]/best"
         ydl_opts.pop("merge_output_format", None)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -468,6 +557,13 @@ def download_media_custom(
 
     if not downloaded_file or not os.path.exists(downloaded_file):
         raise FileNotFoundError("Could not locate downloaded media file.")
+
+    if media_type == "video" and not check_video_has_audio(downloaded_file):
+        logger.warning(f"Custom video {downloaded_file} has no audio track. Invoking automatic audio stream muxer...")
+        fixed = mux_audio_fallback(url, downloaded_file, cookie_file, proxy=None)
+        if fixed and os.path.exists(fixed):
+            downloaded_file = fixed
+            size_mb = round(os.path.getsize(downloaded_file) / (1024 * 1024), 2)
 
     size_mb = round(os.path.getsize(downloaded_file) / (1024 * 1024), 2)
     return {
