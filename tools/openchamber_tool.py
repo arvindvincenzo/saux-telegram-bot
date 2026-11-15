@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 import httpx
@@ -12,7 +13,27 @@ OPENCODE_PORT = 57123
 OPENCODE_AUTH = ("opencode", "sauxagent2026")
 PRIMARY_MODEL = "inkling-2-small-free"
 
-OPENCODE_EXE = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "@openchamberelectron" / "resources" / "opencode-cli" / "opencode.exe"
+def find_opencode_bin() -> Path | None:
+    """Locates OpenCode CLI binary on Linux (Railway) or Windows (local)."""
+    custom_bin = os.environ.get("OPENCODE_BIN")
+    if custom_bin and Path(custom_bin).exists():
+        return Path(custom_bin)
+    which_bin = shutil.which("opencode")
+    if which_bin:
+        return Path(which_bin)
+    for lp in [
+        Path("/usr/local/bin/opencode"),
+        Path("/root/.opencode/bin/opencode"),
+        Path.home() / ".opencode" / "bin" / "opencode"
+    ]:
+        if lp.exists():
+            return lp
+    win_path = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "@openchamberelectron" / "resources" / "opencode-cli" / "opencode.exe"
+    if win_path.exists():
+        return win_path
+    return None
+
+OPENCODE_EXE = find_opencode_bin()
 
 AGENTIC_SYSTEM_PROMPT = (
     "<system-reminder>\n"
@@ -31,25 +52,30 @@ async def ensure_opencode_service():
     if await is_openchamber_ready():
         return True
     
-    if OPENCODE_EXE.exists():
-        logger.info(f"Starting opencode server on port {OPENCODE_PORT}...")
+    bin_path = find_opencode_bin()
+    if bin_path and bin_path.exists():
+        logger.info(f"Starting opencode server on port {OPENCODE_PORT} using {bin_path}...")
         env = os.environ.copy()
         env["OPENCODE_SERVER_PASSWORD"] = "sauxagent2026"
+        env["OPENCODE_SERVER_USERNAME"] = "opencode"
         try:
+            cmd = [str(bin_path), "serve", "--hostname", "127.0.0.1", "--port", str(OPENCODE_PORT)]
             subprocess.Popen(
-                [str(OPENCODE_EXE), "serve", "--port", str(OPENCODE_PORT)],
+                cmd,
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             )
-            for _ in range(10):
+            for _ in range(12):
                 await asyncio.sleep(0.5)
                 if await is_openchamber_ready():
                     logger.info("OpenCode server is up and responsive!")
                     return True
         except Exception as e:
             logger.error(f"Failed to auto-spawn OpenCode: {e}")
+    else:
+        logger.warning("opencode binary not found on this system.")
     return False
 
 async def is_openchamber_ready() -> bool:
@@ -99,13 +125,22 @@ async def _poll_for_answer(session_id: str, prompt: str, timeout_seconds: int = 
         except Exception:
             prev_ids = set()
 
-        # 2. Submit prompt
+        # 2. Submit prompt (supports OpenCode v1.18+ schema {"prompt": {"text": ...}} and legacy {"text": ...})
+        prompt_payload = {"prompt": {"text": full_prompt}}
         p_resp = await client.post(
             f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{session_id}/prompt",
             auth=OPENCODE_AUTH,
-            json={"text": full_prompt},
+            json=prompt_payload,
             headers={"Content-Type": "application/json"}
         )
+        if p_resp.status_code == 400:
+            # Fallback for older OpenCode schemas
+            p_resp = await client.post(
+                f"http://127.0.0.1:{OPENCODE_PORT}/api/session/{session_id}/prompt",
+                auth=OPENCODE_AUTH,
+                json={"text": full_prompt},
+                headers={"Content-Type": "application/json"}
+            )
         if p_resp.status_code != 200:
             raise RuntimeError(f"Prompt rejected ({p_resp.status_code}): {p_resp.text}")
 
@@ -200,12 +235,13 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
 
     # 4. Bot identity / capability questions
     capability_triggers = [
-        "who are you", "what bot", "what are you", "what can you do", "introduce yourself",
+        "who are you", "who r u", "who r you", "who are u", "who is this", "what r u", "what r you",
+        "what bot", "what are you", "what can you do", "introduce yourself",
         "tell me about yourself", "your name", "features", "capabilities", "what do you do",
         "what do u do", "what can u do", "how to use", "how do you work", "things you can do",
         "what you can do", "what u can do"
     ]
-    if any(q in clean_p for q in capability_triggers) or re.search(r"\bwhat\b.*\b(things\b.*\bdo|can (you|u) do|do (you|u) do|features|capabilities)\b", clean_p):
+    if any(q in clean_p for q in capability_triggers) or re.search(r"\b(who|what)\s+(are|r|is)\s+(u|you|this|bot)\b", clean_p) or re.search(r"\bwhat\b.*\b(things\b.*\bdo|can (you|u) do|do (you|u) do|features|capabilities)\b", clean_p):
         return (
             "🤖 **I am SAUX Super Intelligence — Autonomous AI Agent.**\n\n"
             "• 🧠 **Autonomous Q&A & Research:** In-depth answers, explanations, and creative assistance\n"
@@ -440,6 +476,22 @@ async def generate_chat_reply(
                 clean_lines.append(f"• **{title}**")
         if clean_lines:
             return enforce_2_to_7_lines("\n".join(clean_lines)), "web-summary"
+
+    # Autonomous Knowledge Fallback: fetches real factual information for general questions
+    try:
+        from tools.web_tool import get_live_web_context
+        clean_q = extract_clean_prompt(prompt)
+        web_facts = get_live_web_context(clean_q, max_results=3)
+        if web_facts:
+            raw_lines = [l.strip() for l in web_facts.splitlines() if l.strip() and not l.startswith("<")]
+            if raw_lines:
+                clean_lines = []
+                for l in raw_lines[:3]:
+                    clean_lines.append(l.replace("• [NEWS] ", "• "))
+                summary_text = "💡 **Autonomous Intelligence:**\n\n" + "\n".join(clean_lines)
+                return enforce_2_to_7_lines(summary_text), "web-summary"
+    except Exception as e:
+        logger.debug(f"Knowledge fallback error: {e}")
 
     clean_q = extract_clean_prompt(prompt)
     fallback_text = (

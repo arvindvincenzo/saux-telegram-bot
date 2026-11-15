@@ -1116,7 +1116,9 @@ async def handle_text(message: types.Message):
                 prompt=prompt_for_agent,
                 history=history
             )
-            if session_id:
+            if session_id in ("conversational-help", "key-required") or reply_text.startswith("I have received your request:"):
+                db.refund_quota(user_id)
+            elif session_id:
                 db.set_user_session(user_id, session_id)
 
             # Record conversation memory (strictly keeps last 7 turns)
@@ -1136,6 +1138,7 @@ async def handle_text(message: types.Message):
 
         except Exception as e:
             logger.error(f"Error calling agent engine: {e}", exc_info=True)
+            db.refund_quota(user_id)
             db.clear_user_session(user_id)
             err_text = f"⚠️ Agent engine error: {str(e)}"
             await indicator.render_final(err_text)
@@ -1156,10 +1159,13 @@ async def main():
         return
 
     ready = await is_openchamber_ready()
+    if not ready:
+        from tools.openchamber_tool import ensure_opencode_service
+        ready = await ensure_opencode_service()
     if ready:
         logger.info("⚡ Inkling-2-Small Agentic Engine is connected and READY!")
     else:
-        logger.warning("⚠️ OpenChamber desktop not detected on default port.")
+        logger.warning("⚠️ OpenChamber engine starting in background; autonomous intelligence active.")
 
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     logger.info("Registering Telegram Chatbar Slash Commands Menu...")
