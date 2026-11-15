@@ -16,6 +16,7 @@ from tools.video_tool import get_media_info, download_media_custom, download_med
 from tools.web_tool import search_web, get_live_web_context
 from tools.openchamber_tool import is_openchamber_ready, generate_chat_reply
 import db
+from supabase_logger import log_interaction
 
 logging.basicConfig(
     level=logging.INFO,
@@ -259,6 +260,14 @@ async def cmd_start(message: types.Message):
         "• /new or /reset — Reset agent conversation context"
     )
     await message.reply(welcome_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
+    log_interaction(
+        platform_user_id=message.from_user.id,
+        username=message.from_user.username,
+        display_name=message.from_user.full_name,
+        user_message=message.text or "/start",
+        ai_response=welcome_text,
+        message_type="command"
+    )
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
@@ -272,36 +281,69 @@ async def cmd_help(message: types.Message):
         "• /new — Reset conversation context"
     )
     await message.reply(help_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
+    log_interaction(
+        platform_user_id=message.from_user.id,
+        username=message.from_user.username,
+        display_name=message.from_user.full_name,
+        user_message=message.text or "/help",
+        ai_response=help_text,
+        message_type="command"
+    )
 
 @dp.message(Command("reset"))
 @dp.message(Command("new"))
 async def cmd_reset(message: types.Message):
     user_id = message.from_user.id
     db.clear_user_session(user_id)
-    await message.reply("🔄 **Agent session reset.** Ready for a fresh task.", parse_mode="Markdown")
+    reply_msg = "🔄 **Agent session reset.** Ready for a fresh task."
+    await message.reply(reply_msg, parse_mode="Markdown")
+    log_interaction(
+        platform_user_id=user_id,
+        username=message.from_user.username,
+        display_name=message.from_user.full_name,
+        user_message=message.text or "/reset",
+        ai_response=reply_msg,
+        message_type="command"
+    )
 
 @dp.message(Command("quota"))
 @dp.message(Command("stats"))
 async def cmd_quota(message: types.Message):
     stats = db.get_user_stats(message.from_user.id, DAILY_USER_LIMIT)
-    await message.reply(
+    quota_msg = (
         f"📊 **Agent Usage Limit:**\n\n"
         f"• Units Utilized Today: `{stats['used_today']}`\n"
         f"• Units Available: `{stats['remaining']}` / `{DAILY_USER_LIMIT}`\n\n"
-        "*(Resets automatically every 24 hours)*",
-        parse_mode="Markdown"
+        "*(Resets automatically every 24 hours)*"
+    )
+    await message.reply(quota_msg, parse_mode="Markdown")
+    log_interaction(
+        platform_user_id=message.from_user.id,
+        username=message.from_user.username,
+        display_name=message.from_user.full_name,
+        user_message=message.text or "/quota",
+        ai_response=quota_msg,
+        message_type="command"
     )
 
 @dp.message(F.text.startswith("/"))
 async def handle_unknown_command(message: types.Message):
-    await message.reply(
+    unknown_msg = (
         "❓ **Unknown command.**\n\n"
         "Tap the **Menu** / **[/]** button on your chatbar or use:\n"
         "• /start — Start the AI Agent\n"
         "• /quota — Check remaining agent limits\n"
         "• /new — Reset conversation context\n"
-        "• /help — View full capabilities & guide",
-        parse_mode="Markdown"
+        "• /help — View full capabilities & guide"
+    )
+    await message.reply(unknown_msg, parse_mode="Markdown")
+    log_interaction(
+        platform_user_id=message.from_user.id,
+        username=message.from_user.username,
+        display_name=message.from_user.full_name,
+        user_message=message.text,
+        ai_response=unknown_msg,
+        message_type="command"
     )
 
 @dp.message(F.photo)
@@ -316,9 +358,15 @@ async def handle_photo(message: types.Message):
     
     allowed, remaining, limit = db.check_and_consume_quota(user_id, username, DAILY_USER_LIMIT)
     if not allowed:
-        await message.reply(
-            f"⚠️ **Agent Usage Limit Reached:** You have utilized your daily quota of `{limit}` units. Resets in 24 hours.",
-            parse_mode="Markdown"
+        quota_err = f"⚠️ **Agent Usage Limit Reached:** You have utilized your daily quota of `{limit}` units. Resets in 24 hours."
+        await message.reply(quota_err, parse_mode="Markdown")
+        log_interaction(
+            platform_user_id=user_id,
+            username=username,
+            display_name=full_name,
+            user_message=caption or "[Photo sent]",
+            ai_response=quota_err,
+            message_type="photo"
         )
         return
     
@@ -361,10 +409,27 @@ async def handle_photo(message: types.Message):
                     parse_mode="Markdown"
                 )
                 await status_msg.delete()
+                log_interaction(
+                    platform_user_id=user_id,
+                    username=username,
+                    display_name=full_name,
+                    user_message=caption or "[Photo Edit]",
+                    ai_response=reply_caption,
+                    message_type="photo_edit"
+                )
 
             except Exception as e:
                 logger.error(f"Error handling photo edit: {e}", exc_info=True)
-                await status_msg.edit_text(f"❌ Failed to process image: {str(e)}")
+                err_text = f"❌ Failed to process image: {str(e)}"
+                await status_msg.edit_text(err_text)
+                log_interaction(
+                    platform_user_id=user_id,
+                    username=username,
+                    display_name=full_name,
+                    user_message=caption or "[Photo Edit]",
+                    ai_response=err_text,
+                    message_type="photo_edit"
+                )
             finally:
                 for f in files_to_clean:
                     if f.exists():
@@ -423,10 +488,28 @@ async def handle_photo(message: types.Message):
                 ])
 
                 await indicator.render_final(reply_text, reply_markup=photo_markup, parse_mode="Markdown")
+                log_interaction(
+                    platform_user_id=user_id,
+                    username=username,
+                    display_name=full_name,
+                    user_message=f"[Sent photo] {user_prompt}",
+                    ai_response=reply_text,
+                    message_type="photo_vision",
+                    conversation_id=session_id or existing_session
+                )
 
             except Exception as e:
                 logger.error(f"Error handling photo vision: {e}", exc_info=True)
-                await indicator.render_final(f"❌ Failed to analyze image: {str(e)}")
+                err_text = f"❌ Failed to analyze image: {str(e)}"
+                await indicator.render_final(err_text)
+                log_interaction(
+                    platform_user_id=user_id,
+                    username=username,
+                    display_name=full_name,
+                    user_message=f"[Sent photo] {user_prompt}",
+                    ai_response=err_text,
+                    message_type="photo_vision"
+                )
 
 @dp.callback_query(F.data.startswith("dl:"))
 async def handle_download_callback(callback: CallbackQuery):
@@ -706,9 +789,16 @@ async def handle_text(message: types.Message):
         url = detected_urls[0]
         allowed, remaining, limit = db.check_and_consume_quota(user_id, username, DAILY_USER_LIMIT)
         if not allowed:
-            await message.reply(
-                f"⚠️ **Agent Usage Limit Reached:** You have utilized your daily quota of `{limit}` units. Resets in 24 hours.",
-                parse_mode="Markdown"
+            limit_msg = f"⚠️ **Agent Usage Limit Reached:** You have utilized your daily quota of `{limit}` units. Resets in 24 hours."
+            await message.reply(limit_msg, parse_mode="Markdown")
+            log_interaction(
+                platform_user_id=user_id,
+                username=username,
+                display_name=full_name,
+                user_message=user_prompt,
+                ai_response=limit_msg,
+                message_type="url",
+                explicit_user_urls=detected_urls
             )
             return
 
@@ -787,6 +877,15 @@ async def handle_text(message: types.Message):
                         caption=plain_caption,
                         reply_markup=action_keyboard
                     )
+            log_interaction(
+                platform_user_id=user_id,
+                username=username,
+                display_name=full_name,
+                user_message=user_prompt,
+                ai_response=plain_caption,
+                message_type="url",
+                explicit_user_urls=detected_urls
+            )
             return
 
         # B. Fresh Download Pipeline
@@ -869,6 +968,16 @@ async def handle_text(message: types.Message):
                 except Exception:
                     pass
 
+                log_interaction(
+                    platform_user_id=user_id,
+                    username=username,
+                    display_name=full_name,
+                    user_message=user_prompt,
+                    ai_response=plain_caption,
+                    message_type="url",
+                    explicit_user_urls=detected_urls
+                )
+
             except Exception as e:
                 logger.error(f"Error in instant media download: {e}", exc_info=True)
                 db.refund_quota(user_id)
@@ -899,6 +1008,15 @@ async def handle_text(message: types.Message):
                         await status_msg.edit_text(user_msg.replace("**", ""), disable_web_page_preview=True)
                     except Exception:
                         pass
+                log_interaction(
+                    platform_user_id=user_id,
+                    username=username,
+                    display_name=full_name,
+                    user_message=user_prompt,
+                    ai_response=user_msg,
+                    message_type="url",
+                    explicit_user_urls=detected_urls
+                )
             finally:
                 for f in files_to_clean:
                     saved_thumb = PENDING_DOWNLOADS.get(token, {}).get("thumb_path")
@@ -919,14 +1037,28 @@ async def handle_text(message: types.Message):
             db.add_conversation_turn(user_id, "user", user_prompt)
             db.add_conversation_turn(user_id, "assistant", conv_check)
             await indicator.render_final(conv_check, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
+        log_interaction(
+            platform_user_id=user_id,
+            username=username,
+            display_name=full_name,
+            user_message=user_prompt,
+            ai_response=conv_check,
+            message_type="text"
+        )
         return
 
     # Quota Check for text/search/agent tasks
     allowed, remaining, limit = db.check_and_consume_quota(user_id, username, DAILY_USER_LIMIT)
     if not allowed:
-        await message.reply(
-            f"⚠️ **Agent Usage Limit Reached:** You have utilized your daily quota of `{limit}` units. Resets in 24 hours.",
-            parse_mode="Markdown"
+        quota_err = f"⚠️ **Agent Usage Limit Reached:** You have utilized your daily quota of `{limit}` units. Resets in 24 hours."
+        await message.reply(quota_err, parse_mode="Markdown")
+        log_interaction(
+            platform_user_id=user_id,
+            username=username,
+            display_name=full_name,
+            user_message=user_prompt,
+            ai_response=quota_err,
+            message_type="text"
         )
         return
 
@@ -938,8 +1070,25 @@ async def handle_text(message: types.Message):
                 results = search_web(query)
                 reply_text = f"🌐 **Search Results for:** `{query}`\n\n{results}"
                 await indicator.render_final(reply_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
+                log_interaction(
+                    platform_user_id=user_id,
+                    username=username,
+                    display_name=full_name,
+                    user_message=user_prompt,
+                    ai_response=reply_text,
+                    message_type="search"
+                )
             except Exception as e:
-                await indicator.render_final(f"❌ Search error: {str(e)}")
+                err_text = f"❌ Search error: {str(e)}"
+                await indicator.render_final(err_text)
+                log_interaction(
+                    platform_user_id=user_id,
+                    username=username,
+                    display_name=full_name,
+                    user_message=user_prompt,
+                    ai_response=err_text,
+                    message_type="search"
+                )
         return
 
     # 3. Agent Execution (Strict 2-7 lines, inkling-2-small-free / cloud fallback)
@@ -975,11 +1124,30 @@ async def handle_text(message: types.Message):
             db.add_conversation_turn(user_id, "assistant", reply_text)
 
             await indicator.render_final(reply_text, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
+            log_interaction(
+                platform_user_id=user_id,
+                username=username,
+                display_name=full_name,
+                user_message=user_prompt,
+                ai_response=reply_text,
+                message_type="text",
+                conversation_id=session_id or existing_session
+            )
 
         except Exception as e:
             logger.error(f"Error calling agent engine: {e}", exc_info=True)
             db.clear_user_session(user_id)
-            await indicator.render_final(f"⚠️ Agent engine error: {str(e)}")
+            err_text = f"⚠️ Agent engine error: {str(e)}"
+            await indicator.render_final(err_text)
+            log_interaction(
+                platform_user_id=user_id,
+                username=username,
+                display_name=full_name,
+                user_message=user_prompt,
+                ai_response=err_text,
+                message_type="text",
+                conversation_id=existing_session
+            )
 
 async def main():
     cleanup_temp_dir()
