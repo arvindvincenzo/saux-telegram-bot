@@ -336,6 +336,21 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
             "Whenever you're ready, let me know if you want to research a topic, download media, or chat."
         )
 
+    # 8. Hearing, Presence & Audio checks
+    if re.search(r"\b(can\s+(you|u)\s+hear(\s+me)?|hear\s+me|are\s+(you|u)\s+(there|listening)|can\s+(you|u)\s+see\s+me|you\s+there|u\s+there|listen(ing)?\s+to\s+me|you\s+listening)\b", clean_p) or "can you hear me" in clean_p or "can u hear me" in clean_p:
+        return (
+            "Yes! I hear you loud and clear. 🔊\n"
+            "I'm fully active, online, and listening.\n"
+            "What would you like to work on right now?"
+        )
+
+    # 9. Single-word confusion / What / Huh
+    if clean_p in ["what", "what?", "huh", "huh?", "pardon", "pardon?", "say again", "repeat", "eh?", "eh"]:
+        return (
+            "I'm right here! 👍\n"
+            "You can ask me any question, research a topic, or paste a video link to download."
+        )
+
     return None
 
 async def query_zero_cost_llm(prompt: str, history: list[dict] | None = None) -> str | None:
@@ -626,9 +641,21 @@ async def generate_chat_reply(
             return enforce_2_to_7_lines("\n".join(clean_lines)), "web-summary"
 
     # Autonomous Knowledge Fallback: fetches real factual information for general questions
+    clean_q = extract_clean_prompt(prompt)
+    conv_check = handle_conversational_fallback(clean_q)
+    if conv_check:
+        return enforce_2_to_7_lines(conv_check), "conversational-intent"
+
+    # If conversational or subjective personal interaction, speak naturally as an AI
+    personal_check = clean_q.lower().strip()
+    if any(p in personal_check for p in ["you hear", "hear me", "you there", "talk to me", "are you", "can you", "do you know me", "who am i", "my name", "love you", "miss you"]):
+        return enforce_2_to_7_lines(
+            "I'm right here with you! 🤖\n"
+            "I'm fully active and ready to help. What would you like to explore or work on next?"
+        ), "conversational-intent"
+
     try:
         from tools.web_tool import get_live_web_context
-        clean_q = extract_clean_prompt(prompt)
         web_facts = get_live_web_context(clean_q, max_results=2)
         if web_facts:
             raw_lines = [l.strip() for l in web_facts.splitlines() if l.strip() and not l.startswith("<")]
