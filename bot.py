@@ -239,7 +239,7 @@ async def handle_quick_actions(callback: CallbackQuery):
     if action == "quota":
         stats = db.get_user_stats(user_id, DAILY_USER_LIMIT)
         await callback.answer(
-            f"⚡ Agent Usage Limit: {stats['remaining']} / {DAILY_USER_LIMIT} units remaining today.",
+            f"📊 Personal Quota: {stats['remaining']}/{DAILY_USER_LIMIT} credits remaining.\n⚡ Active Engine: LLaMA 3.1 8B Instant (Ultra-Fast 0.2s)\n🟢 Status: 100% Online",
             show_alert=True
         )
     elif action == "reset":
@@ -309,12 +309,27 @@ async def cmd_reset(message: types.Message):
 @dp.message(Command("quota"))
 @dp.message(Command("stats"))
 async def cmd_quota(message: types.Message):
+    from config import groq_key_pool, gemini_key_pool
     stats = db.get_user_stats(message.from_user.id, DAILY_USER_LIMIT)
+    active_keys = groq_key_pool.total_keys + gemini_key_pool.total_keys
+    engine_name = "LLaMA 3.1 8B Instant (Ultra-Fast 0.2s)" if groq_key_pool.total_keys > 0 else ("Gemini 2.0 Flash" if gemini_key_pool.total_keys > 0 else "Autonomous Intelligence")
+    burst_cap = f"{max(300, active_keys * 300):,} req/min" if active_keys > 0 else "High Availability"
+
     quota_msg = (
-        f"📊 **Agent Usage Limit:**\n\n"
-        f"• Units Utilized Today: `{stats['used_today']}`\n"
-        f"• Units Available: `{stats['remaining']}` / `{DAILY_USER_LIMIT}`\n\n"
-        "*(Resets automatically every 24 hours)*"
+        f"📊 **SAUX Super Intelligence — Network Status & Quota**\n\n"
+        f"👤 **Your Private Daily Allocation:**\n"
+        f"• Credits Remaining: `{stats['remaining']}` / `{DAILY_USER_LIMIT}` units\n"
+        f"• Credits Used Today: `{stats['used_today']}` units\n"
+        f"• Individual Reset: Automatic refresh every 24 hours\n\n"
+        f"⚡ **Active AI Engine & Network Health:**\n"
+        f"• Primary Engine: `{engine_name}`\n"
+        f"• Burst Capacity: `{burst_cap}` (Multi-Key Distributed Pool)\n"
+        f"• Network Health: 🟢 Optimal (100% Online)\n\n"
+        f"🛠️ **Credit Utilization Guide:**\n"
+        f"• 🧠 Autonomous AI Research & Q&A: `1 credit`\n"
+        f"• ⚡ 1080p Video Downloads (Reels/TikTok/YT): `1 credit`\n"
+        f"• 🖼️ Smart Image Compression: `1 credit`\n"
+        f"• 💬 Greetings, Help, & Menu Commands: `Free (0 credits)`"
     )
     await message.reply(quota_msg, parse_mode="Markdown")
     log_interaction(

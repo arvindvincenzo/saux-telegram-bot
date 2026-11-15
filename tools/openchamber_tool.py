@@ -516,58 +516,78 @@ async def generate_chat_reply(
             logger.warning(f"Local OpenCode failed ({e}). Backing off for 300s...")
             _opencode_backoff_until = now + 300.0
 
-    # Cloud / Headless Fallback:
+    # 1. High-Throughput Distributed Groq Engine (Dynamic 8B/70B + Multi-Key Auto-Failover)
     from config import gemini_key_pool, groq_key_pool
-    gem_key = gemini_key_pool.get_key()
-    if gem_key:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gem_key}"
-            contents = []
-            if history:
-                for h in history[-6:]:
-                    role = "user" if h.get("role") == "user" else "model"
-                    contents.append({"role": role, "parts": [{"text": h.get("content", "")}]})
-            contents.append({"role": "user", "parts": [{"text": f"{AGENTIC_SYSTEM_PROMPT}{prompt}"}]})
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.post(url, json={
-                    "contents": contents,
-                    "generationConfig": {"maxOutputTokens": 300, "temperature": 0.3}
-                })
-                if resp.status_code == 200:
-                    data = resp.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
-                        return enforce_2_to_7_lines(text), "gemini-cloud"
-        except Exception as e:
-            logger.warning(f"Gemini cloud fallback error: {e}")
+    if groq_key_pool.total_keys > 0:
+        is_complex = len(prompt.split()) > 60 or any(k in prompt.lower() for k in ["code", "script", "algorithm", "deep analysis", "write an essay", "compare and contrast"])
+        chosen_model = "llama-3.3-70b-versatile" if is_complex else "llama-3.1-8b-instant"
 
-    groq_key = groq_key_pool.get_key()
-    if groq_key:
-        try:
-            url = "https://api.groq.com/openai/v1/chat/completions"
-            messages = [{"role": "system", "content": AGENTIC_SYSTEM_PROMPT}]
-            if history:
-                for h in history[-6:]:
-                    role = "user" if h.get("role") == "user" else "assistant"
-                    messages.append({"role": role, "content": h.get("content", "")})
-            messages.append({"role": "user", "content": prompt})
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.post(
-                    url,
-                    headers={"Authorization": f"Bearer {groq_key}"},
-                    json={
-                        "model": "llama-3.3-70b-versatile",
-                        "messages": messages,
-                        "max_tokens": 250,
-                        "temperature": 0.3
-                    }
-                )
-                if resp.status_code == 200:
-                    text = resp.json()["choices"][0]["message"]["content"].strip()
-                    return enforce_2_to_7_lines(text), "groq-cloud"
-        except Exception as e:
-            logger.warning(f"Groq cloud fallback error: {e}")
+        messages = [{"role": "system", "content": AGENTIC_SYSTEM_PROMPT}]
+        if history:
+            for h in history[-6:]:
+                role = "user" if h.get("role") == "user" else "assistant"
+                messages.append({"role": role, "content": h.get("content", "")})
+        messages.append({"role": "user", "content": prompt})
+
+        max_attempts = min(3, groq_key_pool.total_keys)
+        for _ in range(max_attempts):
+            groq_key = groq_key_pool.get_key()
+            if not groq_key:
+                break
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}"},
+                        json={
+                            "model": chosen_model,
+                            "messages": messages,
+                            "max_tokens": 300,
+                            "temperature": 0.3
+                        }
+                    )
+                    if resp.status_code == 200:
+                        text = resp.json()["choices"][0]["message"]["content"].strip()
+                        return enforce_2_to_7_lines(text), f"groq-{chosen_model}"
+                    elif resp.status_code == 429:
+                        logger.warning("Groq key burst rate-limited (429). Hopping to next key in pool...")
+                        continue
+            except Exception as e:
+                logger.warning(f"Groq attempt error: {e}")
+                continue
+
+    # 2. Distributed Google Gemini Engine (with Multi-Key Failover)
+    if gemini_key_pool.total_keys > 0:
+        max_gemini_attempts = min(3, gemini_key_pool.total_keys)
+        for _ in range(max_gemini_attempts):
+            gem_key = gemini_key_pool.get_key()
+            if not gem_key:
+                break
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gem_key}"
+                contents = []
+                if history:
+                    for h in history[-6:]:
+                        role = "user" if h.get("role") == "user" else "model"
+                        contents.append({"role": role, "parts": [{"text": h.get("content", "")}]})
+                contents.append({"role": "user", "parts": [{"text": f"{AGENTIC_SYSTEM_PROMPT}{prompt}"}]})
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.post(url, json={
+                        "contents": contents,
+                        "generationConfig": {"maxOutputTokens": 300, "temperature": 0.3}
+                    })
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+                            return enforce_2_to_7_lines(text), "gemini-cloud"
+                    elif resp.status_code == 429:
+                        logger.warning("Gemini key burst rate-limited (429). Hopping to next key in pool...")
+                        continue
+            except Exception as e:
+                logger.warning(f"Gemini cloud fallback error: {e}")
+                continue
 
     # Conversational Fallback: handles greetings, identity, clarifications, and feelings
     conv_reply = handle_conversational_fallback(prompt, history)
