@@ -263,16 +263,22 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
     import re
     clean_p = extract_clean_prompt(prompt).lower().strip()
 
-    # 1. Greetings & Slang
-    greeting_pattern = r"^(hi+|hey+(\s+there)*|hello+|hola+|sup|yo+|wassup|wazzup|what'?s\s*up|wsp|yew+|ye+|howdy|greetings|good\s*(morning|afternoon|evening|day|night))\b"
-    if re.search(greeting_pattern, clean_p) or clean_p in ["wassup", "wazzup", "whatsup", "whats up", "what's up", "wsp", "yoo", "yooo", "yeww", "yew", "yo"]:
+    # 1. Hearing, Presence & Audio checks (Highest priority so "yoo can you hear me" is answered correctly)
+    if re.search(r"\b(can\s+(you|u)\s+hear(\s+me)?|hear\s+me|are\s+(you|u)\s+(there|listening)|can\s+(you|u)\s+see\s+me|you\s+there|u\s+there|listen(ing)?\s+to\s+me|you\s+listening)\b", clean_p) or "can you hear me" in clean_p or "can u hear me" in clean_p or "hear me" in clean_p:
         return (
-            "👋 **Hey there! Welcome to SAUX Super Intelligence.**\n"
-            "I'm your autonomous assistant for deep research, live web facts, media downloads, and image engineering.\n"
-            "What would you like to work on today?"
+            "Yes! I hear you loud and clear. 🔊\n"
+            "I'm fully active, online, and listening.\n"
+            "What would you like to work on right now?"
         )
 
-    # 2. Clarifications / Follow-up reactions (e.g. 'why u saying about that?', 'why did you say that')
+    # 2. Single-word confusion / What / Huh
+    if clean_p in ["what", "what?", "huh", "huh?", "pardon", "pardon?", "say again", "repeat", "eh?", "eh"]:
+        return (
+            "I'm right here! 👍\n"
+            "You can ask me any question, research a topic, or paste a video link to download."
+        )
+
+    # 3. Clarifications / Follow-up reactions (e.g. 'why u saying about that?', 'why did you say that')
     if re.search(r"\b(why (are you|did you|u|you) say|what do you mean|why saying that|why u saying|who asked that)\b", clean_p):
         return (
             "I apologize for the confusion earlier!\n"
@@ -281,7 +287,7 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
             "What can I help you with right now?"
         )
 
-    # 3. Emotions, Mood, Feelings, Feeling down/sad
+    # 4. Emotions, Mood, Feelings, Feeling down/sad
     if re.search(r"\b(my mood|mood is bad|mood so bad|feel bad|feeling bad|i am sad|i'm sad|feeling low|i feel down|depressed|cheer me up|what to do when sad|bad mood)\b", clean_p):
         return (
             "I'm really sorry you're feeling down today. 💙\n"
@@ -291,7 +297,7 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
             "I'm right here if you want to chat, vent, or distract yourself with something interesting!"
         )
 
-    # 4. Bot identity / capability questions
+    # 5. Bot identity / capability questions
     capability_triggers = [
         "who are you", "who r u", "who r you", "who are u", "who is this", "what r u", "what r you",
         "what bot", "what are you", "what can you do", "introduce yourself",
@@ -309,7 +315,16 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
             "Just send me a message, image, or media link anytime to get started!"
         )
 
-    # 5. Status / How are you / What happened
+    # 6. Greetings & Slang
+    greeting_pattern = r"^(hi+|hey+(\s+there)*|hello+|hola+|sup|yo+|wassup|wazzup|what'?s\s*up|wsp|yew+|ye+|howdy|greetings|good\s*(morning|afternoon|evening|day|night))\b"
+    if re.search(greeting_pattern, clean_p) or clean_p in ["wassup", "wazzup", "whatsup", "whats up", "what's up", "wsp", "yoo", "yooo", "yeww", "yew", "yo"]:
+        return (
+            "👋 **Hey there! Welcome to SAUX Super Intelligence.**\n"
+            "I'm your autonomous assistant for deep research, live web facts, media downloads, and image engineering.\n"
+            "What would you like to work on today?"
+        )
+
+    # 7. Status / How are you / What happened
     status_triggers = [
         "how are you", "how are u", "how do you do", "how r u", "todsy good time", "today good time",
         "what happen to you", "what happened to you", "what happen", "what happened",
@@ -322,33 +337,18 @@ def handle_conversational_fallback(prompt: str, history: list[dict] | None = Non
             "Whether you need in-depth research, live web facts, media downloads, or image tools, what would you like to work on?"
         )
 
-    # 6. Thanks / gratitude
+    # 8. Thanks / gratitude
     if any(q in clean_p for q in ["thanks", "thank you", "thx", "appreciate", "thank u"]):
         return (
             "You're very welcome! Always glad to help.\n"
             "Let me know whenever you're ready for the next task or question. 🚀"
         )
 
-    # 7. Conversational small talk acknowledgments & Casual Reactions
+    # 9. Conversational small talk acknowledgments & Casual Reactions
     if re.match(r"^(ok|okay|cool|nice|awesome|great|got it|understood|lol+|haha+|lmao|sure|yep|yeah|alright|roger|bruh|bro|dude|yeww?)$", clean_p):
         return (
             "Got it! 👍\n"
             "Whenever you're ready, let me know if you want to research a topic, download media, or chat."
-        )
-
-    # 8. Hearing, Presence & Audio checks
-    if re.search(r"\b(can\s+(you|u)\s+hear(\s+me)?|hear\s+me|are\s+(you|u)\s+(there|listening)|can\s+(you|u)\s+see\s+me|you\s+there|u\s+there|listen(ing)?\s+to\s+me|you\s+listening)\b", clean_p) or "can you hear me" in clean_p or "can u hear me" in clean_p:
-        return (
-            "Yes! I hear you loud and clear. 🔊\n"
-            "I'm fully active, online, and listening.\n"
-            "What would you like to work on right now?"
-        )
-
-    # 9. Single-word confusion / What / Huh
-    if clean_p in ["what", "what?", "huh", "huh?", "pardon", "pardon?", "say again", "repeat", "eh?", "eh"]:
-        return (
-            "I'm right here! 👍\n"
-            "You can ask me any question, research a topic, or paste a video link to download."
         )
 
     return None
@@ -640,36 +640,42 @@ async def generate_chat_reply(
         if clean_lines:
             return enforce_2_to_7_lines("\n".join(clean_lines)), "web-summary"
 
-    # Autonomous Knowledge Fallback: fetches real factual information for general questions
+    # Autonomous Knowledge Fallback: fetches real factual information only for explicit search/factual queries
     clean_q = extract_clean_prompt(prompt)
     conv_check = handle_conversational_fallback(clean_q)
     if conv_check:
         return enforce_2_to_7_lines(conv_check), "conversational-intent"
 
-    # If conversational or subjective personal interaction, speak naturally as an AI
+    # Conversational presence, listening, or emotional check
     personal_check = clean_q.lower().strip()
-    if any(p in personal_check for p in ["you hear", "hear me", "you there", "talk to me", "are you", "can you", "do you know me", "who am i", "my name", "love you", "miss you"]):
+    if any(p in personal_check for p in ["you hear", "hear me", "you there", "talk to me", "are you", "can you", "do you know me", "who am i", "my name", "love you", "miss you", "listen"]):
         return enforce_2_to_7_lines(
-            "I'm right here with you! 🤖\n"
+            "Yes! I'm right here with you and listening attentively. 🤖\n"
             "I'm fully active and ready to help. What would you like to explore or work on next?"
         ), "conversational-intent"
 
-    try:
-        from tools.web_tool import get_live_web_context
-        web_facts = get_live_web_context(clean_q, max_results=2)
-        if web_facts:
-            raw_lines = [l.strip() for l in web_facts.splitlines() if l.strip() and not l.startswith("<")]
-            if raw_lines:
-                clean_lines = []
-                for l in raw_lines[:3]:
-                    clean_lines.append(l.replace("• [NEWS] ", "• "))
-                return enforce_2_to_7_lines("\n".join(clean_lines)), "web-summary"
-    except Exception as e:
-        logger.debug(f"Knowledge fallback error: {e}")
+    # Only fetch live web facts if query is an explicit search or fact lookup
+    search_keywords = ["search", "find", "who is", "what is", "where is", "when did", "latest", "news", "price", "vs", "versus", "weather", "today", "history of", "score", "wikipedia"]
+    is_factual_query = any(k in personal_check for k in search_keywords)
 
-    clean_q = extract_clean_prompt(prompt)
+    if is_factual_query:
+        try:
+            from tools.web_tool import get_live_web_context
+            web_facts = get_live_web_context(clean_q, max_results=2)
+            if web_facts:
+                raw_lines = [l.strip() for l in web_facts.splitlines() if l.strip() and not l.startswith("<")]
+                if raw_lines:
+                    clean_lines = []
+                    for l in raw_lines[:2]:
+                        clean_lines.append(l.replace("• [NEWS] ", "• "))
+                    formatted_knowledge = "Here is what I found on that:\n" + "\n".join(clean_lines)
+                    return enforce_2_to_7_lines(formatted_knowledge), "web-summary"
+        except Exception as e:
+            logger.debug(f"Knowledge fallback error: {e}")
+
+    # General conversational AI response
     fallback_text = (
-        f"I'm here to assist with \"{clean_q[:55]}\".\n"
-        "Let me know if you would like me to research this in-depth, summarize key facts, or break down the steps!"
+        f"I'm right here and ready to help! 🚀\n"
+        f"You can ask me anything, paste a media link to download, or type `search {clean_q[:30]}` for real-time web facts."
     )
     return enforce_2_to_7_lines(fallback_text), "conversational-help"
