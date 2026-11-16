@@ -580,21 +580,48 @@ async def generate_chat_reply(
                 "You can also tap below to compress this photo into ~1KB ultra-compact size."
             ), "photo-ack"
 
-    global _opencode_backoff_until
-    now = asyncio.get_event_loop().time()
-    if now >= _opencode_backoff_until and await is_openchamber_ready():
-        target_sid = session_id if (session_id and session_id != "cloud-fallback") else None
-        try:
-            if not target_sid:
-                target_sid = await create_fresh_session()
-            reply = await _poll_for_answer(target_sid, prompt, timeout_seconds=6.0)
-            return enforce_2_to_7_lines(reply), target_sid
-        except Exception as e:
-            logger.warning(f"Local OpenCode failed ({e}). Backing off for 15s...")
-            _opencode_backoff_until = now + 15.0
+    # 1. High-Throughput Distributed Groq Engine (Ultra-Fast 0.5s Primary Engine)
+    from config import gemini_key_pool, groq_key_pool, openai_key_pool, OPENAI_MODEL
+    if groq_key_pool.total_keys > 0:
+        is_complex = len(prompt.split()) > 60 or any(k in prompt.lower() for k in ["code", "script", "algorithm", "deep analysis", "write an essay", "compare and contrast"])
+        chosen_model = "openai/gpt-oss-120b" if is_complex else "qwen/qwen3.8-27b"
 
-    # 1. Distributed OpenAI Engine (ChatGPT gpt-4o-mini / gpt-4o)
-    from config import openai_key_pool, OPENAI_MODEL
+        messages = [{"role": "system", "content": AGENTIC_SYSTEM_PROMPT}]
+        if history:
+            for h in history[-6:]:
+                role = "user" if h.get("role") == "user" else "assistant"
+                messages.append({"role": role, "content": h.get("content", "")})
+        messages.append({"role": "user", "content": prompt})
+
+        max_attempts = min(3, groq_key_pool.total_keys)
+        for _ in range(max_attempts):
+            groq_key = groq_key_pool.get_key()
+            if not groq_key:
+                break
+            for try_model in [chosen_model, "openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
+                try:
+                    async with httpx.AsyncClient(timeout=4.0) as client:
+                        resp = await client.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {groq_key}"},
+                            json={
+                                "model": try_model,
+                                "messages": messages,
+                                "max_tokens": 300,
+                                "temperature": 0.3
+                            }
+                        )
+                        if resp.status_code == 200:
+                            text = resp.json()["choices"][0]["message"]["content"].strip()
+                            return enforce_2_to_7_lines(text), f"groq-{try_model}"
+                        elif resp.status_code == 429:
+                            logger.warning("Groq burst rate-limited (429). Hopping...")
+                            break
+                except Exception as e:
+                    logger.warning(f"Groq attempt error ({try_model}): {e}")
+                    continue
+
+    # 2. Distributed OpenAI Engine (ChatGPT gpt-4o-mini / gpt-4o)
     if openai_key_pool.total_keys > 0:
         max_openai_attempts = min(3, openai_key_pool.total_keys)
         for _ in range(max_openai_attempts):
@@ -633,45 +660,18 @@ async def generate_chat_reply(
                 logger.warning(f"OpenAI attempt error: {e}")
                 continue
 
-    # 2. High-Throughput Distributed Groq Engine (Dynamic 8B/70B + Multi-Key Auto-Failover)
-    from config import gemini_key_pool, groq_key_pool
-    if groq_key_pool.total_keys > 0:
-        is_complex = len(prompt.split()) > 60 or any(k in prompt.lower() for k in ["code", "script", "algorithm", "deep analysis", "write an essay", "compare and contrast"])
-        chosen_model = "llama-3.3-70b-versatile" if is_complex else "llama-3.1-8b-instant"
-
-        messages = [{"role": "system", "content": AGENTIC_SYSTEM_PROMPT}]
-        if history:
-            for h in history[-6:]:
-                role = "user" if h.get("role") == "user" else "assistant"
-                messages.append({"role": role, "content": h.get("content", "")})
-        messages.append({"role": "user", "content": prompt})
-
-        max_attempts = min(3, groq_key_pool.total_keys)
-        for _ in range(max_attempts):
-            groq_key = groq_key_pool.get_key()
-            if not groq_key:
-                break
-            try:
-                async with httpx.AsyncClient(timeout=3.0) as client:
-                    resp = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {groq_key}"},
-                        json={
-                            "model": chosen_model,
-                            "messages": messages,
-                            "max_tokens": 300,
-                            "temperature": 0.3
-                        }
-                    )
-                    if resp.status_code == 200:
-                        text = resp.json()["choices"][0]["message"]["content"].strip()
-                        return enforce_2_to_7_lines(text), f"groq-{chosen_model}"
-                    elif resp.status_code == 429:
-                        logger.warning("Groq key burst rate-limited (429). Hopping to next key in pool...")
-                        continue
-            except Exception as e:
-                logger.warning(f"Groq attempt error: {e}")
-                continue
+    global _opencode_backoff_until
+    now = asyncio.get_event_loop().time()
+    if now >= _opencode_backoff_until and await is_openchamber_ready():
+        target_sid = session_id if (session_id and session_id != "cloud-fallback") else None
+        try:
+            if not target_sid:
+                target_sid = await create_fresh_session()
+            reply = await _poll_for_answer(target_sid, prompt, timeout_seconds=6.0)
+            return enforce_2_to_7_lines(reply), target_sid
+        except Exception as e:
+            logger.warning(f"Local OpenCode failed ({e}). Backing off for 15s...")
+            _opencode_backoff_until = now + 15.0
 
     # 2. Distributed Google Gemini Engine (with Multi-Key Failover)
     if gemini_key_pool.total_keys > 0:

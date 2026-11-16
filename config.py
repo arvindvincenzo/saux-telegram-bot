@@ -41,7 +41,8 @@ openai_key_pool = KeyPool(raw_openai_keys)
 # Model definitions
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "google:gemini-2.0-flash")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "groq:llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+GROQ_COMPLEX_MODEL = os.getenv("GROQ_COMPLEX_MODEL", "openai/gpt-oss-120b")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "openai:qwen2.5:7b")
 
 # Temp storage for downloads / processed media
