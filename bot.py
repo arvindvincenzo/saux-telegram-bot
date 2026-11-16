@@ -1044,23 +1044,6 @@ async def handle_text(message: types.Message):
                             pass
         return
 
-    # Free Conversational Route: greetings, help, bot identity, and capability questions do NOT consume quota!
-    from tools.openchamber_tool import handle_conversational_fallback
-    conv_check = handle_conversational_fallback(user_prompt)
-    if conv_check:
-        async with LiveThinkingIndicator(message, prefix="Thinking...") as indicator:
-            db.add_conversation_turn(user_id, "user", user_prompt)
-            db.add_conversation_turn(user_id, "assistant", conv_check)
-            await indicator.render_final(conv_check, reply_markup=get_quick_action_keyboard(), parse_mode="Markdown")
-        log_interaction(
-            platform_user_id=user_id,
-            username=username,
-            display_name=full_name,
-            user_message=user_prompt,
-            ai_response=conv_check,
-            message_type="text"
-        )
-        return
 
     # Quota Check for text/search/agent tasks
     allowed, remaining, limit = db.check_and_consume_quota(user_id, username, DAILY_USER_LIMIT)
