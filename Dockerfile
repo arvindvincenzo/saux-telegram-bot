@@ -17,4 +17,6 @@ RUN pip install --no-cache-dir -U pip setuptools wheel && \
 
 COPY . .
 
+RUN if [ ! -f config/config.yml ] && [ -f config/config.example.yml ]; then cp config/config.example.yml config/config.yml; fi
+
 CMD ["python", "run.py"]
