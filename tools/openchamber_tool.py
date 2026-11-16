@@ -541,9 +541,42 @@ async def generate_chat_reply(
                 except Exception as e:
                     logger.warning(f"Groq vision error: {e}")
 
+            openai_key = openai_key_pool.get_key()
+            if openai_key:
+                try:
+                    url = "https://api.openai.com/v1/chat/completions"
+                    messages = [{"role": "system", "content": AGENTIC_SYSTEM_PROMPT}]
+                    if history:
+                        for h in history[-6:]:
+                            role = "user" if h.get("role") == "user" else "assistant"
+                            messages.append({"role": role, "content": h.get("content", "")})
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64_data}"}}
+                        ]
+                    })
+                    async with httpx.AsyncClient(timeout=25.0) as client:
+                        resp = await client.post(
+                            url,
+                            headers={"Authorization": f"Bearer {openai_key}"},
+                            json={
+                                "model": "gpt-4o-mini",
+                                "messages": messages,
+                                "max_tokens": 250,
+                                "temperature": 0.2
+                            }
+                        )
+                        if resp.status_code == 200:
+                            text = resp.json()["choices"][0]["message"]["content"].strip()
+                            return enforce_2_to_7_lines(text), "openai-vision"
+                except Exception as e:
+                    logger.warning(f"OpenAI vision error: {e}")
+
             return enforce_2_to_7_lines(
                 "🤖 **Image Received**\n"
-                "I see your photo! To enable multimodal visual answers, set a free Gemini or Groq API key.\n"
+                "I see your photo! To enable multimodal visual answers, set an OpenAI, Gemini, or Groq API key.\n"
                 "You can also tap below to compress this photo into ~1KB ultra-compact size."
             ), "photo-ack"
 
@@ -560,7 +593,47 @@ async def generate_chat_reply(
             logger.warning(f"Local OpenCode failed ({e}). Backing off for 15s...")
             _opencode_backoff_until = now + 15.0
 
-    # 1. High-Throughput Distributed Groq Engine (Dynamic 8B/70B + Multi-Key Auto-Failover)
+    # 1. Distributed OpenAI Engine (ChatGPT gpt-4o-mini / gpt-4o)
+    from config import openai_key_pool, OPENAI_MODEL
+    if openai_key_pool.total_keys > 0:
+        max_openai_attempts = min(3, openai_key_pool.total_keys)
+        for _ in range(max_openai_attempts):
+            openai_key = openai_key_pool.get_key()
+            if not openai_key:
+                break
+            try:
+                messages = [{"role": "system", "content": AGENTIC_SYSTEM_PROMPT}]
+                if history:
+                    for h in history[-6:]:
+                        role = "user" if h.get("role") == "user" else "assistant"
+                        messages.append({"role": role, "content": h.get("content", "")})
+                messages.append({"role": "user", "content": prompt})
+
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {openai_key}"},
+                        json={
+                            "model": OPENAI_MODEL,
+                            "messages": messages,
+                            "max_tokens": 300,
+                            "temperature": 0.4
+                        }
+                    )
+                    if resp.status_code == 200:
+                        text = resp.json()["choices"][0]["message"]["content"].strip()
+                        return enforce_2_to_7_lines(text), f"openai-{OPENAI_MODEL}"
+                    elif resp.status_code == 429:
+                        err_json = resp.json().get("error", {})
+                        logger.warning(f"OpenAI 429 error: {err_json.get('message')}")
+                        if err_json.get("code") == "credit_balance_exhausted":
+                            break
+                        continue
+            except Exception as e:
+                logger.warning(f"OpenAI attempt error: {e}")
+                continue
+
+    # 2. High-Throughput Distributed Groq Engine (Dynamic 8B/70B + Multi-Key Auto-Failover)
     from config import gemini_key_pool, groq_key_pool
     if groq_key_pool.total_keys > 0:
         is_complex = len(prompt.split()) > 60 or any(k in prompt.lower() for k in ["code", "script", "algorithm", "deep analysis", "write an essay", "compare and contrast"])

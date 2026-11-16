@@ -35,7 +35,11 @@ gemini_key_pool = KeyPool(raw_gemini_keys)
 raw_groq_keys = os.getenv("GROQ_API_KEYS") or os.getenv("GROQ_API_KEY", "")
 groq_key_pool = KeyPool(raw_groq_keys)
 
+raw_openai_keys = os.getenv("OPENAI_API_KEYS") or os.getenv("OPENAI_API_KEY", "")
+openai_key_pool = KeyPool(raw_openai_keys)
+
 # Model definitions
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "google:gemini-2.0-flash")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "groq:llama-3.3-70b-versatile")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "openai:qwen2.5:7b")

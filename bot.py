@@ -309,10 +309,10 @@ async def cmd_reset(message: types.Message):
 @dp.message(Command("quota"))
 @dp.message(Command("stats"))
 async def cmd_quota(message: types.Message):
-    from config import groq_key_pool, gemini_key_pool
+    from config import groq_key_pool, gemini_key_pool, openai_key_pool
     stats = db.get_user_stats(message.from_user.id, DAILY_USER_LIMIT)
-    active_keys = groq_key_pool.total_keys + gemini_key_pool.total_keys
-    engine_name = "LLaMA 3.1 8B Instant (Ultra-Fast 0.2s)" if groq_key_pool.total_keys > 0 else ("Gemini 2.0 Flash" if gemini_key_pool.total_keys > 0 else "Autonomous Intelligence")
+    active_keys = groq_key_pool.total_keys + gemini_key_pool.total_keys + openai_key_pool.total_keys
+    engine_name = "ChatGPT 4o-mini" if openai_key_pool.total_keys > 0 else ("LLaMA 3.1 8B Instant" if groq_key_pool.total_keys > 0 else ("Gemini 2.0 Flash" if gemini_key_pool.total_keys > 0 else "Autonomous Intelligence"))
     burst_cap = f"{max(300, active_keys * 300):,} req/min" if active_keys > 0 else "High Availability"
 
     quota_msg = (
