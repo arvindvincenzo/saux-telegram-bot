@@ -1,0 +1,46 @@
+available_text_models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+
+info:
+  qwen/qwen3.8-27b:
+    type: chat_completion
+    vision: false
+    name: Qwen 2.5 27B
+    description: Ultra-fast (0.4s) high-intelligence AI model powered by Groq.
+    price_per_1000_input_tokens: 0.0001
+    price_per_1000_output_tokens: 0.0001
+    scores:
+      Smart: 5
+      Fast: 5
+      Cheap: 5
+
+  openai/gpt-oss-120b:
+    type: chat_completion
+    vision: false
+    name: GPT-OSS 120B
+    description: Deep reasoning open flagship model on Groq.
+    price_per_1000_input_tokens: 0.0005
+    price_per_1000_output_tokens: 0.0005
+    scores:
+      Smart: 5
+      Fast: 4
+      Cheap: 4
+
+  openai/gpt-oss-20b:
+    type: chat_completion
+    vision: false
+    name: GPT-OSS 20B
+    description: Fast reasoning model on Groq.
+    price_per_1000_input_tokens: 0.0001
+    price_per_1000_output_tokens: 0.0001
+    scores:
+      Smart: 4
+      Fast: 5
+      Cheap: 5
+
+  whisper-large-v3-turbo:
+    type: audio
+    price_per_1_min: 0.001
+
+  whisper:
+    type: audio
+    price_per_1_min: 0.001

@@ -1,32 +1,20 @@
 FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive \
-    DENO_INSTALL="/root/.deno" \
-    PATH="/root/.opencode/bin:/root/.deno/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
 
-# Install ffmpeg, nodejs, npm, unzip, ca-certificates, and deno for fast JS challenge solving
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    nodejs \
-    npm \
-    ca-certificates \
     curl \
-    unzip \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://deno.land/install.sh | sh \
-    && (curl -fsSL https://opencode.ai/install | bash || true) \
-    && (npm install -g opencode-ai || true) \
-    && if [ -f /root/.opencode/bin/opencode ]; then cp /root/.opencode/bin/opencode /usr/local/bin/opencode; fi
+    ca-certificates \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -U pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
 COPY . .
 
-# Run bot
-CMD ["python", "bot.py"]
+CMD ["python", "run.py"]
