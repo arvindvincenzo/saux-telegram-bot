@@ -1849,7 +1849,6 @@ async def post_init(application: Application):
     commands = [
         BotCommand("/start", "Start & quick overview 🚀"),
         BotCommand("/profile", "User profile & usage 👤"),
-        BotCommand("/admin", "Admin userbase & analytics 👑"),
         BotCommand("/mode", "Select AI chat mode 🎭"),
         BotCommand("/earn", "Your Earnings — 50% Stars affiliate 💰"),
         BotCommand("/crate", "Open Crate media dashboard 🗂️"),
@@ -1893,6 +1892,7 @@ async def commands_command_handle(update: Update, context: CallbackContext):
 # ==============================================================================
 ADMIN_USERNAMES = {"arvindvincenzo"}
 ADMIN_USER_IDS = {5486657726}
+ADMIN_WEBAPP_URL = "https://saux-telegram-bot-production.up.railway.app/admin"
 
 
 def is_admin(user: Optional[User]) -> bool:
@@ -1999,7 +1999,7 @@ async def get_admin_dashboard_view(page: int = 0, per_page: int = 5) -> Tuple[st
     # Action row
     buttons.append([
         InlineKeyboardButton("🔄 Refresh Userbase", callback_data="admin_refresh"),
-        InlineKeyboardButton("🗂️ Userbase Mini App", web_app=WebAppInfo(url="https://saux.si/")),
+        InlineKeyboardButton("🗂️ Userbase Mini App", web_app=WebAppInfo(url=ADMIN_WEBAPP_URL)),
     ])
     buttons.append([
         InlineKeyboardButton("✖ Close Admin Hub", callback_data="admin_close")
