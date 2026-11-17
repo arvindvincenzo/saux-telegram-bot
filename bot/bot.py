@@ -143,6 +143,31 @@ async def register_user_if_not_exists(update: Any, context: CallbackContext, use
         )
         await db.start_new_dialog(user.id)
 
+        # Real-time alert to Admin (@arvindvincenzo)
+        try:
+            admin_id = 5486657726
+            if user.id != admin_id:
+                u_handle = f"@{user.username}" if user.username else "<i>[No @username set]</i>"
+                u_name = html.escape(f"{user.first_name or ''} {user.last_name or ''}".strip() or "Anonymous")
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                alert_text = (
+                    "🔔 <b>New User Joined SAUX!</b>\n\n"
+                    f"👤 <b>Name:</b> {u_name}\n"
+                    f"🔗 <b>Username:</b> {u_handle}\n"
+                    f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+                    f"⏰ <b>Joined At:</b> {now_str}\n\n"
+                    "<i>Tap /admin to view your full live userbase & analytics.</i>"
+                )
+                asyncio.create_task(
+                    context.bot.send_message(
+                        chat_id=admin_id,
+                        text=alert_text,
+                        parse_mode=ParseMode.HTML
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"Could not dispatch admin new-user notification: {e}")
+
     # Ensure bottom-left corner has the Crate mini app button
     try:
         eff_chat = getattr(update, "effective_chat", None) or (getattr(update, "message", None) and getattr(update.message, "chat", None))
@@ -423,9 +448,15 @@ async def crate_handle(update: Update, context: CallbackContext):
         f"• ⭐ <b>Subscription Management:</b> Top up or check Telegram Stars balance with /premium\n\n"
         f"Tap the bottom menu button <b>Crate</b> to open anytime!"
     )
+    is_private = getattr(update.effective_chat, "type", None) == "private"
+    if is_private:
+        crate_btn = InlineKeyboardButton("🗂️ Launch Crate", web_app=WebAppInfo(url="https://saux.si/"))
+    else:
+        crate_btn = InlineKeyboardButton("🗂️ Launch Crate ↗", url="https://t.me/sauxsibot/crate")
+
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🗂️ Launch Crate", web_app=WebAppInfo(url="https://saux.si/")),
+            crate_btn,
             InlineKeyboardButton("👥 Strangerspace ↗", url=OFFICIAL_SUPERGROUP_URL)
         ],
         [
@@ -1818,6 +1849,7 @@ async def post_init(application: Application):
     commands = [
         BotCommand("/start", "Start & quick overview 🚀"),
         BotCommand("/profile", "User profile & usage 👤"),
+        BotCommand("/admin", "Admin userbase & analytics 👑"),
         BotCommand("/mode", "Select AI chat mode 🎭"),
         BotCommand("/earn", "Your Earnings — 50% Stars affiliate 💰"),
         BotCommand("/crate", "Open Crate media dashboard 🗂️"),
@@ -1855,6 +1887,246 @@ async def commands_command_handle(update: Update, context: CallbackContext):
     text, keyboard = get_commands_hub_card(user_id)
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
+
+# ==============================================================================
+# SECURE ADMIN & USERBASE CONTROLLER (@arvindvincenzo ONLY)
+# ==============================================================================
+ADMIN_USERNAMES = {"arvindvincenzo"}
+ADMIN_USER_IDS = {5486657726}
+
+
+def is_admin(user: Optional[User]) -> bool:
+    if not user:
+        return False
+    uname = (user.username or "").lower().lstrip("@")
+    return uname in ADMIN_USERNAMES or user.id in ADMIN_USER_IDS
+
+
+def _format_date(val: Any) -> str:
+    if not val:
+        return "N/A"
+    if isinstance(val, dict) and "val" in val:
+        val = val["val"]
+    if isinstance(val, str):
+        try:
+            val = datetime.fromisoformat(val)
+        except Exception:
+            return val[:19].replace("T", " ")
+    if isinstance(val, datetime):
+        return val.strftime("%Y-%m-%d %H:%M:%S")
+    return str(val)
+
+
+async def get_admin_dashboard_view(page: int = 0, per_page: int = 5) -> Tuple[str, InlineKeyboardMarkup]:
+    all_users = await db.get_all_users()
+
+    # Filter real users (exclude internal test fixtures and the bot's own ID)
+    real_users = []
+    for u in all_users:
+        uid = u.get("_id")
+        if uid == 8851751300:
+            continue
+        uname = str(u.get("username") or "")
+        if uname.startswith("test_") or uname.startswith("ref_") or uname in ("alice", "bob", "charlie", "david"):
+            continue
+        real_users.append(u)
+
+    total_real = len(real_users)
+    now = datetime.now()
+    active_today = 0
+    for u in real_users:
+        last_act = u.get("last_interaction")
+        if isinstance(last_act, dict) and "val" in last_act:
+            last_act = last_act["val"]
+        if isinstance(last_act, str):
+            try:
+                last_act = datetime.fromisoformat(last_act)
+            except Exception:
+                last_act = None
+        if isinstance(last_act, datetime):
+            if last_act.date() == now.date():
+                active_today += 1
+
+    total_pages = max(1, (total_real + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * per_page
+    end_idx = min(start_idx + per_page, total_real)
+    page_users = real_users[start_idx:end_idx]
+
+    lines = [
+        "👑 <b>SAUX Admin & Userbase Control Hub</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"👥 <b>Total Real Users:</b> <code>{total_real}</code>",
+        f"⚡ <b>Active Users Today:</b> <code>{active_today}</code>",
+        f"🤖 <b>AI Rotation Pool:</b> <code>10 Groq Keys Active</code>",
+        f"🕒 <b>Server Clock:</b> <code>{now.strftime('%Y-%m-%d %H:%M:%S')}</code>",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"📋 <b>User Directory (Page {page + 1}/{total_pages}):</b>\n"
+    ]
+
+    buttons = []
+    for i, u in enumerate(page_users, start=start_idx + 1):
+        uid = u.get("_id")
+        fname = html.escape(str(u.get("first_name") or "").strip())
+        lname = html.escape(str(u.get("last_name") or "").strip())
+        full_name = f"{fname} {lname}".strip() or "Anonymous"
+        uname = u.get("username")
+        handle_display = f"@{uname}" if uname else "<i>[No @username set]</i>"
+        joined_str = _format_date(u.get("first_seen"))
+        last_str = _format_date(u.get("last_interaction"))
+
+        lines.append(
+            f"<b>{i}. {full_name}</b> ({handle_display})\n"
+            f"   🆔 <code>{uid}</code> | 📅 Joined: {joined_str}\n"
+            f"   ⏱️ Last Active: {last_str}"
+        )
+
+        btn_label = f"🔍 {full_name[:14]} (@{uname})" if uname else f"🔍 {full_name[:20]}"
+        buttons.append([InlineKeyboardButton(btn_label, callback_data=f"admin_user_{uid}")])
+
+    lines.append("\n<i>Tap any user above to inspect their behavior, token usage, and media history.</i>")
+
+    # Pagination controls
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"admin_page_{page - 1}"))
+    nav_row.append(InlineKeyboardButton(f"📄 {page + 1}/{total_pages}", callback_data=f"admin_page_{page}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"admin_page_{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    # Action row
+    buttons.append([
+        InlineKeyboardButton("🔄 Refresh Userbase", callback_data="admin_refresh"),
+        InlineKeyboardButton("🗂️ Userbase Mini App", web_app=WebAppInfo(url="https://saux.si/")),
+    ])
+    buttons.append([
+        InlineKeyboardButton("✖ Close Admin Hub", callback_data="admin_close")
+    ])
+
+    return "\n".join(lines), InlineKeyboardMarkup(buttons)
+
+
+async def get_admin_user_detail_view(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
+    user_dict = None
+    all_users = await db.get_all_users()
+    for u in all_users:
+        if u.get("_id") == user_id or str(u.get("_id")) == str(user_id):
+            user_dict = u
+            break
+
+    if not user_dict:
+        return "❌ <b>User not found in database.</b>", InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Back to Userbase", callback_data="admin_page_0")]
+        ])
+
+    fname = html.escape(str(user_dict.get("first_name") or "").strip())
+    lname = html.escape(str(user_dict.get("last_name") or "").strip())
+    full_name = f"{fname} {lname}".strip() or "Anonymous"
+    uname = user_dict.get("username")
+    handle_display = f"@{uname}" if uname else "<i>[No @username set]</i>"
+
+    joined_str = _format_date(user_dict.get("first_seen"))
+    last_str = _format_date(user_dict.get("last_interaction"))
+
+    dialog_count = await db.get_user_dialog_count(user_id)
+    chat_mode = user_dict.get("current_chat_mode") or "assistant"
+    model = user_dict.get("current_model") or "openai/gpt-oss-120b"
+
+    # Tokens used breakdown
+    token_usage = user_dict.get("n_used_tokens") or {}
+    token_lines = []
+    total_tokens = 0
+    for m, counts in token_usage.items():
+        inp = counts.get("n_input_tokens", 0)
+        outp = counts.get("n_output_tokens", 0)
+        total_tokens += (inp + outp)
+        token_lines.append(f"• <code>{m}</code>: {inp + outp:,} tokens (in: {inp:,}, out: {outp:,})")
+
+    tokens_text = "\n".join(token_lines) if token_lines else "<i>No tokens consumed yet</i>"
+
+    # Recent video activity
+    recent_videos = user_dict.get("recent_videos_metadata") or []
+    video_lines = []
+    for vid in recent_videos[:3]:
+        title = html.escape(str(vid.get("video_title") or "Untitled Media"))
+        creator = html.escape(str(vid.get("creator_name") or "Unknown"))
+        src = vid.get("source_url") or ""
+        video_lines.append(f"• 🎬 <b>{title}</b> by <i>{creator}</i>\n  <a href='{src}'>Source Link</a>")
+    videos_text = "\n".join(video_lines) if video_lines else "<i>No media downloads yet</i>"
+
+    # Stars / Affiliate info
+    prem_info = await db.get_premium_info(user_id)
+    is_premium = prem_info.get("is_premium", False)
+    stars_earned = user_dict.get("affiliate_stars_earned", 0)
+
+    text = (
+        f"👤 <b>User Intelligence Profile: {full_name}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Handle:</b> {handle_display}\n"
+        f"• <b>User ID:</b> <code>{user_id}</code>\n"
+        f"• <b>Status:</b> {'👑 Premium VIP' if is_premium else '🆓 Free Tier'}\n"
+        f"• <b>Affiliate Stars Earned:</b> ⭐ {stars_earned} Stars\n"
+        f"• <b>First Registered:</b> {joined_str}\n"
+        f"• <b>Last Activity:</b> {last_str}\n"
+        f"• <b>Total Dialog Sessions:</b> {dialog_count}\n"
+        f"• <b>Current Chat Mode:</b> <code>{chat_mode}</code>\n"
+        f"• <b>Preferred Model:</b> <code>{model}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Token Consumption ({total_tokens:,} total):</b>\n{tokens_text}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📥 <b>Recent Media Activity:</b>\n{videos_text}"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("◀️ Back to Userbase", callback_data="admin_page_0"),
+            InlineKeyboardButton("🔄 Refresh User", callback_data=f"admin_user_{user_id}")
+        ]
+    ])
+    return text, keyboard
+
+
+async def admin_handle(update: Update, context: CallbackContext):
+    user = update.effective_user
+    # STRICT BACKEND ENFORCEMENT:
+    # For everyone else, /admin must not display or open anything.
+    if not is_admin(user):
+        return
+
+    await register_user_if_not_exists(update, context, user)
+    text, keyboard = await get_admin_dashboard_view(page=0)
+    await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
+
+async def admin_callback_handle(update: Update, context: CallbackContext):
+    query = update.callback_query
+    user = query.from_user
+    # STRICT BACKEND ENFORCEMENT:
+    if not is_admin(user):
+        await query.answer()
+        return
+
+    data = query.data
+    if data.startswith("admin_page_"):
+        page = int(data.split("_")[-1])
+        text, keyboard = await get_admin_dashboard_view(page=page)
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        await query.answer()
+    elif data.startswith("admin_user_"):
+        target_uid = int(data.split("_")[-1])
+        text, keyboard = await get_admin_user_detail_view(target_uid)
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        await query.answer()
+    elif data == "admin_refresh":
+        text, keyboard = await get_admin_dashboard_view(page=0)
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        await query.answer("Userbase refreshed! 🔄")
+    elif data == "admin_close":
+        await query.delete_message()
+
+
 def run_bot() -> None:
     request = HTTPXRequest(http_version="1.1", connect_timeout=30.0, read_timeout=30.0)
     application = (
@@ -1878,6 +2150,7 @@ def run_bot() -> None:
         user_filter = filters.User(username=usernames) | filters.User(user_id=user_ids) | filters.Chat(chat_id=group_ids)
 
     application.add_handler(CommandHandler("start", start_handle, filters=user_filter))
+    application.add_handler(CommandHandler("admin", admin_handle))
     application.add_handler(CommandHandler("about", about_handle, filters=user_filter))
     application.add_handler(CommandHandler("profile", show_balance_handle, filters=user_filter))
     application.add_handler(CommandHandler("earn", unlock_and_earn_command_handle, filters=user_filter))
@@ -1891,6 +2164,7 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("subscribe", premium_handle, filters=user_filter))
     application.add_handler(CommandHandler("help_group_chat", help_group_chat_handle, filters=user_filter))
 
+    application.add_handler(CallbackQueryHandler(admin_callback_handle, pattern="^admin_"))
     application.add_handler(CallbackQueryHandler(premium_callback_handle, pattern="^(open_premium_plans|buy_premium_stars|buy_stars_|back_to_about|show_balance_btn|show_profile_btn|open_unlock_earn|open_crate_info|open_commands_hub|start_new_dialog_hub|open_settings_hub)"))
     application.add_handler(PreCheckoutQueryHandler(precheckout_handle))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handle))

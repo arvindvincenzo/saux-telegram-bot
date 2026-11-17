@@ -877,6 +877,61 @@ class Database:
             return
         return self._run_write_sync(lambda conn: self._update_n_used_tokens_impl(conn, user_id, model, n_input_tokens, n_output_tokens))
 
+    def _get_all_users_impl(self, conn: sqlite3.Connection) -> List[dict]:
+        if self.use_sqlite:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, data FROM users ORDER BY rowid DESC")
+            rows = cursor.fetchall()
+            users = []
+            for r in rows:
+                try:
+                    u = _loads(r[1])
+                    if isinstance(u, dict):
+                        u["_id"] = r[0]
+                        users.append(u)
+                except Exception:
+                    pass
+            return users
+        else:
+            return list(self.user_collection.find({}).sort("_id", -1))
+
+    async def get_all_users_async(self) -> List[dict]:
+        if self.use_sqlite:
+            return await self._execute_read_async(self._get_all_users_impl)
+        else:
+            return await asyncio.to_thread(self._get_all_users_impl, None)
+
+    def get_all_users(self) -> Any:
+        if self._is_in_loop():
+            return self.get_all_users_async()
+        if self.use_sqlite:
+            return self._run_read_sync(self._get_all_users_impl)
+        else:
+            return self._get_all_users_impl(None)
+
+    def _get_user_dialog_count_impl(self, conn: sqlite3.Connection, user_id: int) -> int:
+        if self.use_sqlite:
+            cursor = conn.cursor()
+            cursor.execute("SELECT count(*) FROM dialogs WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            return row[0] if row else 0
+        else:
+            return self.dialog_collection.count_documents({"user_id": user_id})
+
+    async def get_user_dialog_count_async(self, user_id: int) -> int:
+        if self.use_sqlite:
+            return await self._execute_read_async(lambda conn: self._get_user_dialog_count_impl(conn, user_id))
+        else:
+            return await asyncio.to_thread(self._get_user_dialog_count_impl, None, user_id)
+
+    def get_user_dialog_count(self, user_id: int) -> Any:
+        if self._is_in_loop():
+            return self.get_user_dialog_count_async(user_id)
+        if self.use_sqlite:
+            return self._run_read_sync(lambda conn: self._get_user_dialog_count_impl(conn, user_id))
+        else:
+            return self._get_user_dialog_count_impl(None, user_id)
+
     def close(self):
         """Cleanly drains and shuts down background database thread executors."""
         self._writer_executor.shutdown(wait=True)
