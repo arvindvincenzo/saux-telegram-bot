@@ -559,9 +559,50 @@ async def transcribe_audio(audio_file) -> str:
 
 
 async def generate_images(prompt, n_images=1, size="1024x1024"):
-    # gpt-image-1 returns base64-encoded images (no URLs), so decode to bytes
-    r = await openai_client.images.generate(
-        model="gpt-image-1", prompt=prompt, n=n_images, size=size
-    )
-    images = [base64.b64decode(item.b64_json) for item in r.data]
+    # If base_url is not Groq, try standard OpenAI image generation
+    is_groq = "groq.com" in str(getattr(config, "openai_api_base", "")).lower()
+    if not is_groq:
+        try:
+            r = await openai_client.images.generate(
+                model="gpt-image-1", prompt=prompt, n=n_images, size=size
+            )
+            images = [base64.b64decode(item.b64_json) for item in r.data]
+            if images:
+                return images
+        except Exception as e:
+            logger.warning(f"OpenAI image generation failed or unsupported ({e}), switching to AI image engine fallback.")
+
+    # High-performance, resilient AI image generator (Pollinations AI)
+    import urllib.parse
+    import httpx
+
+    width, height = 1024, 1024
+    if size and "x" in size:
+        try:
+            parts = size.split("x")
+            width, height = int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+
+    images = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    async with httpx.AsyncClient(timeout=45.0, headers=headers) as client:
+        for i in range(n_images):
+            encoded_prompt = urllib.parse.quote(prompt.strip())
+            seed = int(time.time() * 1000) + i
+            url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width={width}&height={height}&seed={seed}&nologo=true"
+            try:
+                resp = await client.get(url, follow_redirects=True)
+                if resp.status_code == 200 and resp.content:
+                    images.append(resp.content)
+                else:
+                    logger.warning(f"Image engine returned HTTP {resp.status_code}")
+            except Exception as e:
+                logger.error(f"Image request error: {e}")
+
+    if not images:
+        raise RuntimeError("Failed to generate image from AI provider.")
     return images

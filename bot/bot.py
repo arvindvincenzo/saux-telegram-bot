@@ -1439,11 +1439,20 @@ async def generate_image_handle(update: Update, context: CallbackContext, messag
         images = await openai_utils.generate_images(message, n_images=config.return_n_generated_images, size=config.image_size)
     except openai.BadRequestError as e:
         if str(e).startswith("Your request was rejected as a result of our safety system"):
-            text = "🥲 Your request <b>doesn't comply</b> with OpenAI's usage policies.\nWhat did you write there, huh?"
+            text = "🥲 Your request <b>doesn't comply</b> with safety policies.\nWhat did you write there, huh?"
             await update.message.reply_text(text, parse_mode=ParseMode.HTML)
             return
         else:
             raise
+    except Exception as e:
+        logger.error(f"Error in generate_image_handle: {e}")
+        text = (
+            "🎨 <b>Image Generation Notice:</b>\n"
+            "Could not generate an image for this prompt right now.\n\n"
+            "💡 <i>Tip: You are currently in <b>Artist mode</b>. To chat normally, switch your mode using /mode</i>"
+        )
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        return
 
     # usage accounting
     cur_imgs = await db.get_user_attribute(user_id, "n_generated_images") or 0
@@ -1451,7 +1460,9 @@ async def generate_image_handle(update: Update, context: CallbackContext, messag
 
     for image in images:
         await update.message.chat.send_action(action="upload_photo")
-        await update.message.reply_photo(io.BytesIO(image))
+        safe_prompt = html.escape(str(message)[:200])
+        caption = f"🎨 <i>{safe_prompt}</i>\n\n💡 <i>Mode: Artist | Switch chat mode anytime with /mode</i>"
+        await update.message.reply_photo(io.BytesIO(image), caption=caption, parse_mode=ParseMode.HTML)
 
 
 async def new_dialog_handle(update: Update, context: CallbackContext):
